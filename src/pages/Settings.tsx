@@ -10,7 +10,6 @@ import {
   Loader2,
   Camera,
 } from 'lucide-react';
-import { Tabs, TabsList, TabsTrigger, TabsContent, Button, Input } from '../components/ui';
 
 export default function Settings() {
   const { user, updateProfile, changePassword, isLoading } = useAuthStore();

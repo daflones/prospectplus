@@ -12,8 +12,7 @@ import {
   RefreshCw,
   Settings
 } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card';
-import Button from '../ui/Button';
+import { Card, CardContent, CardHeader } from '../ui/Card';
 
 interface InstanceRegisterProps {
   userName: string;
@@ -86,6 +85,7 @@ export default function InstanceRegister({ userName, onSuccess, onCancel }: Inst
       // Salvar instância localmente
       const newInstance: EvolutionInstance = {
         id: response.instance.instanceId,
+        userId: userName, // Usando userName como userId temporariamente
         instanceName: response.instance.instanceName,
         instanceId: response.instance.instanceId,
         userName,

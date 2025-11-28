@@ -78,7 +78,7 @@ export interface Campaign {
   name: string;
   description?: string;
   type: 'email' | 'whatsapp' | 'sms' | 'mixed';
-  status: 'draft' | 'active' | 'paused' | 'completed' | 'cancelled';
+  status: 'draft' | 'active' | 'paused' | 'completed' | 'cancelled' | 'running' | 'scheduled';
   targetAudience: string[]; // Array de lead IDs
   messageTemplate: string;
   scheduleConfig?: {
@@ -86,6 +86,9 @@ export interface Campaign {
     endDate?: Date;
     sendTime?: string;
     timezone?: string;
+    messageType?: 'default' | 'custom';
+    minIntervalMinutes?: number;
+    maxIntervalMinutes?: number;
   };
   instanceId?: string; // ID da instância WhatsApp a ser usada
   stats: {

@@ -552,7 +552,7 @@ export default function LeadsPage() {
 }
 
 // Componentes dos modais serão criados em arquivos separados
-function LeadDetailsModal({ lead, onClose, onDelete, onUpdate }: any) {
+function LeadDetailsModal({ lead, onClose, onDelete }: any) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white dark:bg-gray-800 rounded-lg max-w-2xl w-full p-6">

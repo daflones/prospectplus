@@ -14,7 +14,6 @@ import Badge from '../components/ui/Badge';
 import toast from 'react-hot-toast';
 import {
   Smartphone,
-  QrCode,
   CheckCircle,
   XCircle,
   Loader2,

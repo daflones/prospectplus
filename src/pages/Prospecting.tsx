@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, MapPin, Briefcase, Loader2, Plus } from 'lucide-react';
+import { Search, MapPin, Briefcase, Plus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, MessageSquare, TrendingUp, Zap, ArrowUpRight, Send, CheckCircle, Clock } from 'lucide-react';
+import { Users, MessageSquare, TrendingUp, Zap, Send, CheckCircle, Clock } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { supabase } from '../services/supabaseService';
 import { Card } from '../components/ui/Card';

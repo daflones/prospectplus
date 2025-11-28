@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { supabase } from './supabaseService';
 
-const PROXY_URL = 'http://localhost:3001'; // Backend proxy
+const PROXY_URL = import.meta.env.PROD ? '' : 'http://localhost:3001'; // Backend proxy
 
 export interface PlaceResult {
   name: string;

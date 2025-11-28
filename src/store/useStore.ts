@@ -125,12 +125,12 @@ export const useStore = create<AppState>()(
         ).length;
         
         const messagesSent = campaigns.reduce(
-          (acc, c) => acc + c.sentCount,
+          (acc, c) => acc + c.stats.sentMessages,
           0
         );
         
         const totalSuccess = campaigns.reduce(
-          (acc, c) => acc + c.sentCount - c.failedCount,
+          (acc, c) => acc + c.stats.sentMessages - c.stats.failedMessages,
           0
         );
         
