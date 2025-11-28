@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useAuthStore } from '../../store/authStore';
 import { CampaignApiService } from '../../services/dispatchApiService';
 import { CampaignDispatchService } from '../../services/campaignDispatchService';
-import { InstanceService } from '../../services/instanceService';
 import Button from '../ui/Button';
 import toast from 'react-hot-toast';
 import { Play, Loader } from 'lucide-react';
@@ -22,16 +21,8 @@ export default function CampaignLauncher({ campaignId, onComplete }: CampaignLau
     setIsLaunching(true);
 
     try {
-      // Verifica se tem instância conectada
-      const instance = await InstanceService.getUserInstance(user.id);
-      
-      if (!instance || instance.status !== 'connected') {
-        toast.error('WhatsApp não conectado. Conecte sua instância primeiro.');
-        setIsLaunching(false);
-        return;
-      }
-
       // Tenta usar o backend primeiro (recomendado - continua mesmo com aba fechada)
+      // O backend verifica automaticamente se o WhatsApp está conectado
       try {
         const result = await CampaignApiService.launchCampaign(campaignId);
         

@@ -823,6 +823,74 @@ class CampaignWorker {
   // ==================== API PÚBLICA ====================
 
   /**
+   * Verifica se a instância do WhatsApp está conectada
+   */
+  async checkWhatsAppInstance(userId) {
+    try {
+      // Busca instância do usuário no banco
+      const { data: instance, error } = await getSupabase()
+        .from('evolution_instances')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (error || !instance) {
+        return { connected: false, message: 'Instância não encontrada' };
+      }
+
+      // Verifica status no banco
+      if (instance.status !== 'connected') {
+        // Tenta verificar diretamente na Evolution API
+        try {
+          const response = await axios.get(
+            `${getEvolutionUrl()}/instance/connectionState/${instance.instance_name}`,
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': getEvolutionKey(),
+              },
+            }
+          );
+
+          const state = response.data?.instance?.state || response.data?.state;
+          const isConnected = state === 'open' || state === 'connected';
+
+          // Atualiza status no banco se mudou
+          if (isConnected && instance.status !== 'connected') {
+            await getSupabase()
+              .from('evolution_instances')
+              .update({ status: 'connected' })
+              .eq('id', instance.id);
+          }
+
+          if (!isConnected) {
+            return { 
+              connected: false, 
+              message: 'WhatsApp desconectado. Reconecte sua instância.',
+              instanceName: instance.instance_name
+            };
+          }
+        } catch (apiError) {
+          console.error('Erro ao verificar status na Evolution API:', apiError.message);
+          return { 
+            connected: false, 
+            message: 'Não foi possível verificar o status do WhatsApp' 
+          };
+        }
+      }
+
+      return { 
+        connected: true, 
+        instanceName: instance.instance_name,
+        instance 
+      };
+    } catch (error) {
+      console.error('Erro ao verificar instância:', error);
+      return { connected: false, message: 'Erro ao verificar WhatsApp' };
+    }
+  }
+
+  /**
    * Inicia uma campanha (chamado pela API)
    */
   async launchCampaign(campaignId) {
@@ -840,6 +908,18 @@ class CampaignWorker {
       if (campaign.status === 'active' || campaign.status === 'searching' || campaign.status === 'validating') {
         return { success: false, message: 'Campanha já está em execução' };
       }
+
+      // Verifica se a instância do WhatsApp está conectada
+      const instanceCheck = await this.checkWhatsAppInstance(campaign.user_id);
+      
+      if (!instanceCheck.connected) {
+        return { 
+          success: false, 
+          message: instanceCheck.message || 'WhatsApp não conectado. Conecte sua instância primeiro.' 
+        };
+      }
+
+      console.log(`✅ WhatsApp conectado: ${instanceCheck.instanceName}`);
 
       // Inicia o processo de busca
       await this.updateCampaignStatus(campaignId, 'searching');
