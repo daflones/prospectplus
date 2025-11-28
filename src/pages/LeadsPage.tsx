@@ -166,15 +166,6 @@ export default function LeadsPage() {
     );
   };
 
-  const handleSelectAll = () => {
-    const currentLeads = getCurrentPageLeads();
-    if (selectedLeads.length === currentLeads.length) {
-      setSelectedLeads([]);
-    } else {
-      setSelectedLeads(currentLeads.map((lead) => lead.id));
-    }
-  };
-
   const handleDeleteSelected = async () => {
     if (selectedLeads.length === 0) {
       toast.error('Selecione pelo menos um lead');
