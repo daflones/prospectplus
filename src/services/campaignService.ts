@@ -17,8 +17,11 @@ export interface Campaign {
   };
   messageTemplate?: string;
   scheduleConfig?: {
-    minInterval: number; // minutos
-    maxInterval: number; // minutos
+    messageType?: 'default' | 'custom';
+    minIntervalMinutes?: number;
+    maxIntervalMinutes?: number;
+    minInterval?: number; // Deprecated
+    maxInterval?: number; // Deprecated
   };
   instanceId?: string;
   totalLeads: number;
