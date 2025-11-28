@@ -194,6 +194,44 @@ export class CampaignService {
   }
 
   /**
+   * Atualiza dados da campanha
+   */
+  static async updateCampaign(
+    campaignId: string,
+    updates: Partial<{
+      name: string;
+      description: string;
+      status: Campaign['status'];
+      targetAudience: Campaign['targetAudience'];
+      messageTemplate: string;
+      mediaFiles: CampaignMediaFile[];
+      scheduleConfig: any;
+    }>
+  ): Promise<void> {
+    try {
+      const updateData: any = {};
+      
+      if (updates.name) updateData.name = updates.name;
+      if (updates.description !== undefined) updateData.description = updates.description;
+      if (updates.status) updateData.status = updates.status;
+      if (updates.targetAudience) updateData.target_audience = updates.targetAudience;
+      if (updates.messageTemplate) updateData.message_template = updates.messageTemplate;
+      if (updates.mediaFiles) updateData.media_files = updates.mediaFiles;
+      if (updates.scheduleConfig) updateData.schedule_config = updates.scheduleConfig;
+
+      const { error } = await supabase
+        .from('campaigns')
+        .update(updateData)
+        .eq('id', campaignId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error updating campaign:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Atualiza status da campanha
    */
   static async updateCampaignStatus(

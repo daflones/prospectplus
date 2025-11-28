@@ -3,13 +3,13 @@ import { Toaster } from 'react-hot-toast';
 import { useEffect } from 'react';
 import { useAuthStore } from './store/authStore';
 import MainLayout from './components/layout/MainLayout';
-import Dashboard from './pages/DashboardNew';
+import Dashboard from './pages/DashboardPremium';
 import Prospecting from './pages/Prospecting';
-import LeadsPage from './pages/LeadsPage';
-import Campaigns from './pages/Campaigns';
+import LeadsPage from './pages/LeadsPremium';
+import Campaigns from './pages/CampaignsPremium';
 import Settings from './pages/Settings';
 import InstanceSettings from './pages/InstanceSettings';
-import Login from './pages/Login';
+import Login from './pages/LoginPremium';
 import Register from './pages/Register';
 import PrivateRoute, { PublicRoute } from './components/auth/PrivateRoute';
 
