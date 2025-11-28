@@ -1,24 +1,17 @@
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   Users,
   MessageSquare,
   TrendingUp,
   Zap,
   Send,
-  CheckCircle,
   Clock,
   ArrowUpRight,
   ArrowDownRight,
-  Calendar,
   Target,
-  Activity,
-  BarChart3,
-  PieChart,
   Sparkles,
-  Building2,
   Phone,
-  Mail,
   MapPin,
   ChevronRight,
   Play,
@@ -745,7 +738,7 @@ export default function DashboardPremium() {
                 href: '/instances',
                 color: 'from-amber-500 to-orange-600',
               },
-            ].map((action, index) => (
+            ].map((action) => (
               <motion.a
                 key={action.title}
                 href={action.href}
