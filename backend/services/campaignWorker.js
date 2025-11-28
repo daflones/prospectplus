@@ -149,7 +149,75 @@ class CampaignWorker {
   // ==================== BUSCA NO GOOGLE MAPS ====================
 
   /**
-   * Busca estabelecimentos no Google Maps
+   * Calcula quantos leads são necessários baseado na configuração da campanha
+   */
+  calculateRequiredLeads(campaign) {
+    const scheduleConfig = campaign.schedule_config || {};
+    const scheduledDispatch = scheduleConfig.scheduledDispatch || {};
+    
+    // Valores padrão
+    const minLeads = 40;
+    const messagesPerDay = scheduledDispatch.messagesPerDay || 50;
+    
+    // Se tem agendamento com data de fim, calcula baseado nos dias
+    if (scheduledDispatch.startDate && scheduledDispatch.endDate) {
+      const startDate = new Date(scheduledDispatch.startDate);
+      const endDate = new Date(scheduledDispatch.endDate);
+      const daysOfWeek = scheduledDispatch.daysOfWeek || [1, 2, 3, 4, 5];
+      
+      // Conta dias úteis no período
+      let workDays = 0;
+      for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+        if (daysOfWeek.includes(d.getDay())) {
+          workDays++;
+        }
+      }
+      
+      const totalNeeded = workDays * messagesPerDay;
+      console.log(`   📊 Campanha de ${workDays} dias x ${messagesPerDay} msgs/dia = ${totalNeeded} leads necessários`);
+      
+      return Math.max(minLeads, totalNeeded);
+    }
+    
+    return minLeads;
+  }
+
+  /**
+   * Verifica se um estabelecimento já existe no banco (por placeId ou telefone)
+   */
+  async checkDuplicateEstablishment(campaign, placeId, phoneNumber) {
+    const normalizedPhone = this.normalizePhone(phoneNumber);
+    
+    // Verifica por placeId
+    const { data: byPlaceId } = await getSupabase()
+      .from('campaign_leads')
+      .select('id')
+      .eq('google_place_id', placeId)
+      .limit(1);
+    
+    if (byPlaceId && byPlaceId.length > 0) {
+      return { isDuplicate: true, reason: 'placeId' };
+    }
+    
+    // Verifica por telefone (em qualquer campanha do usuário)
+    if (normalizedPhone) {
+      const { data: byPhone } = await getSupabase()
+        .from('campaign_leads')
+        .select('id')
+        .eq('user_id', campaign.user_id)
+        .eq('phone_number', normalizedPhone)
+        .limit(1);
+      
+      if (byPhone && byPhone.length > 0) {
+        return { isDuplicate: true, reason: 'phone' };
+      }
+    }
+    
+    return { isDuplicate: false };
+  }
+
+  /**
+   * Busca estabelecimentos no Google Maps com paginação inteligente
    */
   async searchEstablishments(campaign) {
     console.log(`\n🔍 ETAPA 1: Buscando estabelecimentos...`);
@@ -171,13 +239,20 @@ class CampaignWorker {
       const query = `${searchQuery} em ${city}, ${state}, ${country}`;
       console.log(`   🔎 Query: ${query}`);
 
-      let allPlaces = [];
+      // Calcula quantos leads são necessários
+      const requiredLeads = this.calculateRequiredLeads(campaign);
+      console.log(`   🎯 Meta: ${requiredLeads} leads únicos`);
+
+      let savedLeads = 0;
+      let duplicatesFound = 0;
+      let processedPlaces = 0;
       let pageToken = null;
       let pageCount = 0;
-      const maxPages = 3;
+      const maxPages = 10; // Aumentado para permitir mais paginação
+      const processedPlaceIds = new Set();
 
-      // Busca múltiplas páginas
-      do {
+      // Busca múltiplas páginas até atingir a meta ou esgotar resultados
+      while (savedLeads < requiredLeads && pageCount < maxPages) {
         const params = {
           query,
           key: getGoogleApiKey(),
@@ -187,6 +262,7 @@ class CampaignWorker {
         if (pageToken) {
           params.pagetoken = pageToken;
           // Google requer delay entre páginas
+          console.log(`   ⏳ Aguardando 2s para próxima página...`);
           await this.delay(2000);
         }
 
@@ -201,56 +277,127 @@ class CampaignWorker {
         }
 
         const places = response.data.results || [];
-        allPlaces = [...allPlaces, ...places];
         pageToken = response.data.next_page_token;
         pageCount++;
 
-        console.log(`   📍 Página ${pageCount}: ${places.length} lugares (Total: ${allPlaces.length})`);
+        console.log(`\n   📄 Página ${pageCount}: ${places.length} estabelecimentos`);
 
-      } while (pageToken && pageCount < maxPages);
+        if (places.length === 0) {
+          console.log(`   ⚠️ Nenhum resultado nesta página`);
+          break;
+        }
 
-      console.log(`   ✅ Total encontrado: ${allPlaces.length} estabelecimentos`);
+        // Processa cada lugar da página
+        for (const place of places) {
+          // Evita processar o mesmo lugar duas vezes
+          if (processedPlaceIds.has(place.place_id)) {
+            continue;
+          }
+          processedPlaceIds.add(place.place_id);
+          processedPlaces++;
 
-      // Busca detalhes (telefone) de cada lugar
-      let placesWithPhone = 0;
-      for (let i = 0; i < allPlaces.length; i++) {
-        const place = allPlaces[i];
-        
-        try {
+          // Verifica se já existe no banco
+          const { isDuplicate, reason } = await this.checkDuplicateEstablishment(
+            campaign, 
+            place.place_id, 
+            null // Ainda não temos o telefone
+          );
+
+          if (isDuplicate) {
+            duplicatesFound++;
+            console.log(`   ⏭️ Duplicado (${reason}): ${place.name}`);
+            continue;
+          }
+
+          // Busca detalhes (telefone)
           const details = await this.getPlaceDetails(place.place_id);
-          
-          if (details && details.phoneNumber) {
-            placesWithPhone++;
-            
-            // Salva como lead pendente de validação
-            await this.saveCampaignLead(campaign, {
-              name: place.name,
-              address: place.formatted_address,
-              phoneNumber: details.phoneNumber,
-              placeId: place.place_id,
-              lat: place.geometry?.location?.lat,
-              lng: place.geometry?.location?.lng,
-            });
+          await this.delay(150); // Rate limit
 
-            console.log(`   📞 ${placesWithPhone}. ${place.name}: ${details.phoneNumber}`);
+          if (!details || !details.phoneNumber) {
+            console.log(`   ❌ Sem telefone: ${place.name}`);
+            continue;
           }
 
-          // Delay para não exceder rate limit
-          if (i < allPlaces.length - 1) {
-            await this.delay(200);
+          // Verifica duplicata por telefone
+          const phoneCheck = await this.checkDuplicateEstablishment(
+            campaign,
+            place.place_id,
+            details.phoneNumber
+          );
+
+          if (phoneCheck.isDuplicate) {
+            duplicatesFound++;
+            console.log(`   ⏭️ Telefone duplicado: ${place.name} (${details.phoneNumber})`);
+            continue;
           }
-        } catch (error) {
-          console.error(`   ⚠️ Erro ao buscar detalhes de ${place.name}:`, error.message);
+
+          // Salva o lead
+          const saved = await this.saveCampaignLead(campaign, {
+            name: place.name,
+            address: place.formatted_address,
+            phoneNumber: details.phoneNumber,
+            placeId: place.place_id,
+            lat: place.geometry?.location?.lat,
+            lng: place.geometry?.location?.lng,
+          });
+
+          if (saved) {
+            savedLeads++;
+            console.log(`   ✅ ${savedLeads}/${requiredLeads} - ${place.name}: ${details.phoneNumber}`);
+
+            // Verifica se atingiu a meta
+            if (savedLeads >= requiredLeads) {
+              console.log(`   🎯 Meta atingida!`);
+              break;
+            }
+          }
+        }
+
+        // Se não tem próxima página, para
+        if (!pageToken) {
+          console.log(`   📄 Não há mais páginas disponíveis`);
+          break;
+        }
+
+        // Se muitos duplicados, continua buscando mais páginas
+        const duplicateRate = duplicatesFound / processedPlaces;
+        if (duplicateRate > 0.7 && savedLeads < requiredLeads) {
+          console.log(`   ⚠️ Alta taxa de duplicados (${Math.round(duplicateRate * 100)}%), buscando mais páginas...`);
         }
       }
 
-      console.log(`   ✅ ${placesWithPhone} estabelecimentos com telefone salvos`);
+      // Resumo final
+      console.log(`\n   ═══════════════════════════════════════`);
+      console.log(`   📊 RESUMO DA BUSCA:`);
+      console.log(`   ═══════════════════════════════════════`);
+      console.log(`   📄 Páginas processadas: ${pageCount}`);
+      console.log(`   🏢 Estabelecimentos analisados: ${processedPlaces}`);
+      console.log(`   ⏭️ Duplicados ignorados: ${duplicatesFound}`);
+      console.log(`   ✅ Leads salvos: ${savedLeads}`);
+      console.log(`   🎯 Meta: ${requiredLeads}`);
+      console.log(`   ═══════════════════════════════════════\n`);
+
+      // Atualiza estatísticas da campanha
+      await getSupabase()
+        .from('campaigns')
+        .update({ 
+          total_leads: savedLeads,
+          search_stats: {
+            pagesProcessed: pageCount,
+            establishmentsAnalyzed: processedPlaces,
+            duplicatesIgnored: duplicatesFound,
+            leadsFound: savedLeads,
+            targetLeads: requiredLeads,
+            searchedAt: new Date().toISOString(),
+          }
+        })
+        .eq('id', campaign.id);
 
       // Atualiza status para validação
-      if (placesWithPhone > 0) {
+      if (savedLeads > 0) {
         await this.updateCampaignStatus(campaign.id, 'validating');
       } else {
-        await this.updateCampaignStatus(campaign.id, 'draft', 'Nenhum estabelecimento com telefone encontrado');
+        await this.updateCampaignStatus(campaign.id, 'draft', 'Nenhum estabelecimento novo com telefone encontrado');
       }
 
     } catch (error) {

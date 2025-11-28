@@ -92,6 +92,116 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'Prospect+ Server' });
 });
 
+// --- WhatsApp API Routes ---
+
+const EVOLUTION_API_URL = process.env.VITE_EVOLUTION_API_URL || process.env.EVOLUTION_API_URL;
+const EVOLUTION_API_KEY = process.env.VITE_EVOLUTION_API_KEY || process.env.EVOLUTION_API_KEY;
+
+// Verificar se número tem WhatsApp
+app.post('/api/whatsapp/check-number', async (req, res) => {
+  try {
+    const { phoneNumber, instanceName } = req.body;
+    
+    // Normaliza o número
+    let number = phoneNumber.replace(/\D/g, '');
+    if (!number.startsWith('55')) {
+      number = '55' + number;
+    }
+
+    console.log(`📱 Verificando WhatsApp: ${number}`);
+
+    const response = await axios.post(
+      `${EVOLUTION_API_URL}/chat/whatsappNumbers/${instanceName}`,
+      { numbers: [number] },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': EVOLUTION_API_KEY,
+        },
+      }
+    );
+
+    const result = response.data?.[0];
+    const exists = result?.exists || false;
+    const jid = result?.jid || null;
+
+    console.log(`   ${exists ? '✅' : '❌'} ${number}: ${exists ? 'Tem WhatsApp' : 'Não tem'}`);
+
+    res.json({ exists, jid, number });
+  } catch (error) {
+    console.error('❌ Erro ao verificar WhatsApp:', error.message);
+    res.json({ exists: false, error: error.message });
+  }
+});
+
+// Enviar mensagem de texto
+app.post('/api/whatsapp/send-text', async (req, res) => {
+  try {
+    const { phoneNumber, message, instanceName } = req.body;
+    
+    let number = phoneNumber.replace(/\D/g, '');
+    if (!number.startsWith('55')) {
+      number = '55' + number;
+    }
+
+    const response = await axios.post(
+      `${EVOLUTION_API_URL}/message/sendText/${instanceName}`,
+      { number, text: message },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': EVOLUTION_API_KEY,
+        },
+      }
+    );
+
+    console.log(`📤 Mensagem enviada para: ${number}`);
+    res.json({ success: true, messageId: response.data?.key?.id });
+  } catch (error) {
+    console.error('❌ Erro ao enviar mensagem:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Enviar mídia
+app.post('/api/whatsapp/send-media', async (req, res) => {
+  try {
+    const { phoneNumber, mediaUrl, mediaType, caption, fileName, instanceName } = req.body;
+    
+    let number = phoneNumber.replace(/\D/g, '');
+    if (!number.startsWith('55')) {
+      number = '55' + number;
+    }
+
+    const payload = {
+      number,
+      mediatype: mediaType,
+      media: mediaUrl,
+      caption: caption || '',
+    };
+    if (fileName) payload.fileName = fileName;
+
+    const response = await axios.post(
+      `${EVOLUTION_API_URL}/message/sendMedia/${instanceName}`,
+      payload,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': EVOLUTION_API_KEY,
+        },
+      }
+    );
+
+    console.log(`📤 Mídia enviada para: ${number}`);
+    res.json({ success: true, messageId: response.data?.key?.id });
+  } catch (error) {
+    console.error('❌ Erro ao enviar mídia:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// --- End WhatsApp Routes ---
+
 // --- Campaign Worker API Routes ---
 
 // Status do worker

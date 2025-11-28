@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { useAuthStore } from './store/authStore';
 import MainLayout from './components/layout/MainLayout';
 import Dashboard from './pages/DashboardPremium';
-import Prospecting from './pages/Prospecting';
+import Prospecting from './pages/ProspectingPremium';
 import LeadsPage from './pages/LeadsPremium';
 import Campaigns from './pages/CampaignsPremium';
 import Settings from './pages/Settings';
