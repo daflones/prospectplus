@@ -1,17 +1,28 @@
 import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
 
-// Configuração do Supabase
-const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
+// Configuração do Supabase (lazy initialization)
+const getSupabaseUrl = () => process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+const getSupabaseKey = () => process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+let supabase = null;
+const getSupabase = () => {
+  if (!supabase) {
+    const url = getSupabaseUrl();
+    const key = getSupabaseKey();
+    if (url && key) {
+      supabase = createClient(url, key);
+    }
+  }
+  return supabase;
+};
 
 // Configuração da Evolution API
-const EVOLUTION_API_URL = process.env.VITE_EVOLUTION_API_URL || process.env.EVOLUTION_API_URL;
-const EVOLUTION_API_KEY = process.env.VITE_EVOLUTION_API_KEY || process.env.EVOLUTION_API_KEY;
+const getEvolutionUrl = () => process.env.VITE_EVOLUTION_API_URL || process.env.EVOLUTION_API_URL;
+const getEvolutionKey = () => process.env.VITE_EVOLUTION_API_KEY || process.env.EVOLUTION_API_KEY;
 
 // Configuração do Google Maps
-const GOOGLE_API_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+const getGoogleApiKey = () => process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
 
 /**
  * Worker de Campanhas - Roda no backend independente do frontend
@@ -38,9 +49,9 @@ class CampaignWorker {
 
     this.isRunning = true;
     console.log('🚀 Campaign Worker iniciado');
-    console.log(`   📍 Google Maps API: ${GOOGLE_API_KEY ? '✅ Configurada' : '❌ Não configurada'}`);
-    console.log(`   📱 Evolution API: ${EVOLUTION_API_KEY ? '✅ Configurada' : '❌ Não configurada'}`);
-    console.log(`   🗄️ Supabase: ${supabaseKey ? '✅ Configurado' : '❌ Não configurado'}`);
+    console.log(`   📍 Google Maps API: ${getGoogleApiKey() ? '✅ Configurada' : '❌ Não configurada'}`);
+    console.log(`   📱 Evolution API: ${getEvolutionKey() ? '✅ Configurada' : '❌ Não configurada'}`);
+    console.log(`   🗄️ Supabase: ${getSupabaseKey() ? '✅ Configurado' : '❌ Não configurado'}`);
     
     // Verifica campanhas a cada 30 segundos
     this.monitorInterval = setInterval(() => {
@@ -78,7 +89,7 @@ class CampaignWorker {
   async checkCampaigns() {
     try {
       // Busca campanhas que precisam de processamento
-      const { data: campaigns, error } = await supabase
+      const { data: campaigns, error } = await getSupabase()
         .from('campaigns')
         .select('*')
         .in('status', ['active', 'searching', 'validating']);
@@ -169,7 +180,7 @@ class CampaignWorker {
       do {
         const params = {
           query,
-          key: GOOGLE_API_KEY,
+          key: getGoogleApiKey(),
           language: 'pt-BR',
         };
 
@@ -259,7 +270,7 @@ class CampaignWorker {
           params: {
             place_id: placeId,
             fields: 'formatted_phone_number,international_phone_number,name',
-            key: GOOGLE_API_KEY,
+            key: getGoogleApiKey(),
             language: 'pt-BR',
           }
         }
@@ -289,7 +300,7 @@ class CampaignWorker {
     if (!phoneNumber) return null;
 
     // Verifica se já existe
-    const { data: existing } = await supabase
+    const { data: existing } = await getSupabase()
       .from('campaign_leads')
       .select('id')
       .eq('campaign_id', campaign.id)
@@ -299,7 +310,7 @@ class CampaignWorker {
     if (existing) return existing;
 
     // Insere novo lead
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('campaign_leads')
       .insert({
         campaign_id: campaign.id,
@@ -333,7 +344,7 @@ class CampaignWorker {
     console.log(`\n📱 ETAPA 2: Validando números de WhatsApp...`);
 
     // Busca instância do usuário
-    const { data: instance, error: instanceError } = await supabase
+    const { data: instance, error: instanceError } = await getSupabase()
       .from('evolution_instances')
       .select('*')
       .eq('user_id', campaign.user_id)
@@ -347,7 +358,7 @@ class CampaignWorker {
     }
 
     // Busca leads pendentes de validação
-    const { data: leads, error: leadsError } = await supabase
+    const { data: leads, error: leadsError } = await getSupabase()
       .from('campaign_leads')
       .select('*')
       .eq('campaign_id', campaign.id)
@@ -358,7 +369,7 @@ class CampaignWorker {
       console.log('   ✅ Todos os leads já foram validados');
       
       // Verifica se há leads válidos
-      const { data: validLeads } = await supabase
+      const { data: validLeads } = await getSupabase()
         .from('campaign_leads')
         .select('id')
         .eq('campaign_id', campaign.id)
@@ -385,12 +396,12 @@ class CampaignWorker {
         
         // Verifica se tem WhatsApp
         const response = await axios.post(
-          `${EVOLUTION_API_URL}/chat/whatsappNumbers/${instance.instance_name}`,
+          `${getEvolutionUrl()}/chat/whatsappNumbers/${instance.instance_name}`,
           { numbers: [cleanNumber] },
           {
             headers: {
               'Content-Type': 'application/json',
-              'apikey': EVOLUTION_API_KEY,
+              'apikey': getEvolutionKey(),
             },
           }
         );
@@ -400,7 +411,7 @@ class CampaignWorker {
         const remoteJid = result?.jid || null;
 
         // Atualiza lead
-        await supabase
+        await getSupabase()
           .from('campaign_leads')
           .update({
             whatsapp_valid: hasWhatsApp,
@@ -427,7 +438,7 @@ class CampaignWorker {
         console.error(`   ⚠️ Erro ao validar ${lead.business_name}:`, error.message);
         
         // Marca como inválido em caso de erro
-        await supabase
+        await getSupabase()
           .from('campaign_leads')
           .update({ whatsapp_valid: false })
           .eq('id', lead.id);
@@ -454,7 +465,7 @@ class CampaignWorker {
   async saveToLeadsTable(userId, campaignLead, remoteJid) {
     try {
       // Verifica se já existe
-      const { data: existing } = await supabase
+      const { data: existing } = await getSupabase()
         .from('leads')
         .select('id')
         .eq('user_id', userId)
@@ -463,7 +474,7 @@ class CampaignWorker {
 
       if (existing) return;
 
-      await supabase
+      await getSupabase()
         .from('leads')
         .insert({
           user_id: userId,
@@ -517,7 +528,7 @@ class CampaignWorker {
       this.activeCampaigns.set(campaign.id, { ...data, timeoutId: null });
       
       // Recarrega campanha do banco
-      const { data: updatedCampaign } = await supabase
+      const { data: updatedCampaign } = await getSupabase()
         .from('campaigns')
         .select('*')
         .eq('id', campaign.id)
@@ -542,7 +553,7 @@ class CampaignWorker {
     console.log(`\n📤 ETAPA 3: Enviando mensagem...`);
 
     // Busca instância
-    const { data: instance } = await supabase
+    const { data: instance } = await getSupabase()
       .from('evolution_instances')
       .select('*')
       .eq('user_id', campaign.user_id)
@@ -556,7 +567,7 @@ class CampaignWorker {
     }
 
     // Busca próximo lead pendente
-    const { data: leads } = await supabase
+    const { data: leads } = await getSupabase()
       .from('campaign_leads')
       .select('*')
       .eq('campaign_id', campaign.id)
@@ -580,7 +591,7 @@ class CampaignWorker {
     try {
       // 1. Envia texto
       const textResponse = await axios.post(
-        `${EVOLUTION_API_URL}/message/sendText/${instance.instance_name}`,
+        `${getEvolutionUrl()}/message/sendText/${instance.instance_name}`,
         {
           number: destination,
           text: campaign.message_template,
@@ -588,7 +599,7 @@ class CampaignWorker {
         {
           headers: {
             'Content-Type': 'application/json',
-            'apikey': EVOLUTION_API_KEY,
+            'apikey': getEvolutionKey(),
           },
         }
       );
@@ -616,12 +627,12 @@ class CampaignWorker {
             if (media.fileName) payload.fileName = media.fileName;
 
             await axios.post(
-              `${EVOLUTION_API_URL}/message/sendMedia/${instance.instance_name}`,
+              `${getEvolutionUrl()}/message/sendMedia/${instance.instance_name}`,
               payload,
               {
                 headers: {
                   'Content-Type': 'application/json',
-                  'apikey': EVOLUTION_API_KEY,
+                  'apikey': getEvolutionKey(),
                 },
               }
             );
@@ -634,7 +645,7 @@ class CampaignWorker {
       }
 
       // Atualiza lead como enviado
-      await supabase
+      await getSupabase()
         .from('campaign_leads')
         .update({
           message_status: 'sent',
@@ -643,7 +654,7 @@ class CampaignWorker {
         .eq('id', lead.id);
 
       // Atualiza estatísticas
-      await supabase
+      await getSupabase()
         .from('campaigns')
         .update({
           sent_messages: (campaign.sent_messages || 0) + 1,
@@ -659,7 +670,7 @@ class CampaignWorker {
       console.error(`   ❌ Erro ao enviar:`, error.message);
 
       // Marca como falha
-      await supabase
+      await getSupabase()
         .from('campaign_leads')
         .update({
           message_status: 'failed',
@@ -667,7 +678,7 @@ class CampaignWorker {
         })
         .eq('id', lead.id);
 
-      await supabase
+      await getSupabase()
         .from('campaigns')
         .update({
           failed_messages: (campaign.failed_messages || 0) + 1,
@@ -694,7 +705,7 @@ class CampaignWorker {
     const nextDispatchAt = new Date(Date.now() + intervalMs);
 
     // Atualiza no banco
-    await supabase
+    await getSupabase()
       .from('campaigns')
       .update({ next_dispatch_at: nextDispatchAt.toISOString() })
       .eq('id', campaign.id);
@@ -726,7 +737,7 @@ class CampaignWorker {
       updateData.error_message = errorMessage;
     }
 
-    await supabase
+    await getSupabase()
       .from('campaigns')
       .update(updateData)
       .eq('id', campaignId);
@@ -738,7 +749,7 @@ class CampaignWorker {
    * Atualiza estatísticas da campanha
    */
   async updateCampaignStats(campaignId) {
-    const { data: stats } = await supabase
+    const { data: stats } = await getSupabase()
       .from('campaign_leads')
       .select('message_status, whatsapp_valid')
       .eq('campaign_id', campaignId);
@@ -750,7 +761,7 @@ class CampaignWorker {
     const sentMessages = stats.filter(s => s.message_status === 'sent').length;
     const failedMessages = stats.filter(s => s.message_status === 'failed').length;
 
-    await supabase
+    await getSupabase()
       .from('campaigns')
       .update({
         total_leads: totalLeads,
@@ -765,7 +776,7 @@ class CampaignWorker {
    */
   async logMessage(campaignId, lead, status, errorMessage = null) {
     try {
-      await supabase
+      await getSupabase()
         .from('campaign_message_log')
         .insert({
           campaign_id: campaignId,
@@ -816,7 +827,7 @@ class CampaignWorker {
    */
   async launchCampaign(campaignId) {
     try {
-      const { data: campaign, error } = await supabase
+      const { data: campaign, error } = await getSupabase()
         .from('campaigns')
         .select('*')
         .eq('id', campaignId)
@@ -866,7 +877,7 @@ class CampaignWorker {
    * Retoma uma campanha pausada
    */
   async resumeCampaign(campaignId) {
-    const { data: campaign } = await supabase
+    const { data: campaign } = await getSupabase()
       .from('campaigns')
       .select('*')
       .eq('id', campaignId)
@@ -877,7 +888,7 @@ class CampaignWorker {
     }
 
     // Verifica se há leads pendentes
-    const { data: pendingLeads } = await supabase
+    const { data: pendingLeads } = await getSupabase()
       .from('campaign_leads')
       .select('id')
       .eq('campaign_id', campaignId)
