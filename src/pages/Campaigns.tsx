@@ -15,6 +15,7 @@ import CreateCampaignModal from '../components/campaigns/CreateCampaignModal';
 import CampaignLauncher from '../components/campaigns/CampaignLauncher';
 import CampaignDetailsModal from '../components/campaigns/CampaignDetailsModal';
 import { CampaignDispatchService } from '../services/campaignDispatchService';
+import { DispatchApiService } from '../services/dispatchApiService';
 import toast from 'react-hot-toast';
 import {
   Plus,
@@ -433,8 +434,18 @@ export default function Campaigns() {
                         size="sm"
                         leftIcon={<Pause className="w-4 h-4" />}
                         onClick={async () => {
-                          await CampaignDispatchService.pauseCampaign(campaign.id);
-                          toast.success('Campanha pausada');
+                          try {
+                            const result = await DispatchApiService.stopCampaign(campaign.id);
+                            if (result.success) {
+                              toast.success('Campanha pausada');
+                            } else {
+                              toast.error(result.message);
+                            }
+                          } catch {
+                            // Fallback para o serviço local se o backend não estiver disponível
+                            await CampaignDispatchService.pauseCampaign(campaign.id);
+                            toast.success('Campanha pausada');
+                          }
                           loadCampaigns();
                         }}
                       >
@@ -448,11 +459,21 @@ export default function Campaigns() {
                         leftIcon={<Play className="w-4 h-4" />}
                         onClick={async () => {
                           if (!user) return;
-                          const result = await CampaignDispatchService.resumeCampaign(campaign.id, user.id);
-                          if (result.success) {
-                            toast.success(result.message);
-                          } else {
-                            toast.error(result.message);
+                          try {
+                            const result = await DispatchApiService.resumeCampaign(campaign.id);
+                            if (result.success) {
+                              toast.success(result.message);
+                            } else {
+                              toast.error(result.message);
+                            }
+                          } catch {
+                            // Fallback para o serviço local
+                            const result = await CampaignDispatchService.resumeCampaign(campaign.id, user.id);
+                            if (result.success) {
+                              toast.success(result.message);
+                            } else {
+                              toast.error(result.message);
+                            }
                           }
                           loadCampaigns();
                         }}
@@ -466,8 +487,14 @@ export default function Campaigns() {
                         size="sm"
                         leftIcon={<StopCircle className="w-4 h-4" />}
                         onClick={async () => {
-                          await CampaignDispatchService.cancelCampaign(campaign.id);
-                          toast.success('Campanha cancelada');
+                          try {
+                            await DispatchApiService.stopCampaign(campaign.id);
+                            await CampaignService.updateCampaignStatus(campaign.id, 'cancelled');
+                            toast.success('Campanha cancelada');
+                          } catch {
+                            await CampaignDispatchService.cancelCampaign(campaign.id);
+                            toast.success('Campanha cancelada');
+                          }
                           loadCampaigns();
                         }}
                       >

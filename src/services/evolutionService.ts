@@ -157,6 +157,58 @@ export class EvolutionService {
     }
   }
 
+  /**
+   * Envia mídia via Evolution API (imagem, vídeo ou documento)
+   * @param instanceName Nome da instância
+   * @param phoneNumber Número do destinatário
+   * @param mediaUrl URL ou base64 do arquivo
+   * @param mediaType Tipo de mídia: 'image' | 'video' | 'document'
+   * @param mimeType MIME type do arquivo (ex: image/png, video/mp4, application/pdf)
+   * @param fileName Nome do arquivo (obrigatório para documentos)
+   * @param caption Legenda opcional
+   */
+  async sendMediaMessage(
+    instanceName: string, 
+    phoneNumber: string, 
+    mediaUrl: string, 
+    mediaType: 'image' | 'video' | 'document' = 'image',
+    mimeType?: string,
+    fileName?: string,
+    caption?: string
+  ): Promise<any> {
+    try {
+      const payload: any = {
+        number: phoneNumber,
+        mediatype: mediaType,
+        media: mediaUrl,
+        delay: 1200,
+      };
+
+      // Adiciona mimetype se fornecido
+      if (mimeType) {
+        payload.mimetype = mimeType;
+      }
+
+      // Adiciona fileName (obrigatório para documentos)
+      if (fileName) {
+        payload.fileName = fileName;
+      }
+
+      // Adiciona caption se fornecido
+      if (caption) {
+        payload.caption = caption;
+      }
+
+      const response = await api.post(`/message/sendMedia/${instanceName}`, payload, {
+        headers: this.getHeaders(),
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error sending media message:', error);
+      throw error;
+    }
+  }
+
   async checkWhatsAppNumber(instanceName: string, phoneNumber: string): Promise<{ exists: boolean; jid?: string }> {
     try {
       const response = await api.post(`/chat/whatsappNumbers/${instanceName}`, {

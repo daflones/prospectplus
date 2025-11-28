@@ -1,5 +1,14 @@
 import { supabase } from './supabaseService';
 
+// Interface para arquivos de mídia da campanha
+export interface CampaignMediaFile {
+  url: string;           // URL ou base64 do arquivo
+  type: 'image' | 'video' | 'document';  // Tipo de mídia
+  mimeType: string;      // MIME type (ex: image/png, video/mp4, application/pdf)
+  fileName: string;      // Nome do arquivo
+  size?: number;         // Tamanho em bytes
+}
+
 export interface Campaign {
   id: string;
   userId: string;
@@ -16,6 +25,7 @@ export interface Campaign {
     };
   };
   messageTemplate?: string;
+  mediaFiles?: CampaignMediaFile[]; // Arquivos de mídia a serem enviados após o texto
   scheduleConfig?: {
     messageType?: 'default' | 'custom';
     minIntervalMinutes?: number;
@@ -93,6 +103,7 @@ export class CampaignService {
     locationCountry?: string;
     messageType: 'default' | 'custom';
     messageContent: string;
+    mediaFiles?: CampaignMediaFile[]; // Arquivos de mídia a serem enviados
     minIntervalMinutes?: number;
     maxIntervalMinutes?: number;
   }): Promise<Campaign> {
@@ -124,6 +135,7 @@ export class CampaignService {
           status: 'draft',
           target_audience: targetAudience,
           message_template: campaignData.messageContent,
+          media_files: campaignData.mediaFiles || [],
           schedule_config: scheduleConfig,
         })
         .select()
@@ -539,6 +551,7 @@ export class CampaignService {
       status: data.status,
       targetAudience: data.target_audience,
       messageTemplate: data.message_template,
+      mediaFiles: data.media_files || [],
       scheduleConfig: data.schedule_config,
       instanceId: data.instance_id,
       totalLeads: data.total_leads || 0,

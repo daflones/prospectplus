@@ -1,5 +1,5 @@
 import { evolutionService } from './evolutionService';
-import { CampaignService, type CampaignLead } from './campaignService';
+import { CampaignService, type CampaignLead, type CampaignMediaFile } from './campaignService';
 import { InstanceService } from './instanceService';
 
 export class CampaignDispatchService {
@@ -118,6 +118,7 @@ export class CampaignDispatchService {
 
       // 6. Inicia o processo de disparo
       const messageContent = campaign.messageTemplate || '';
+      const mediaFiles = campaign.mediaFiles || [];
       const minInterval = campaign.scheduleConfig?.minInterval || 10;
       const maxInterval = campaign.scheduleConfig?.maxInterval || 20;
       
@@ -125,7 +126,7 @@ export class CampaignDispatchService {
       const [firstLead, ...remainingLeads] = pendingLeads;
       
       console.log('📤 Enviando primeira mensagem imediatamente...');
-      await this.sendMessage(campaignId, userId, instanceName, firstLead, messageContent);
+      await this.sendMessage(campaignId, userId, instanceName, firstLead, messageContent, mediaFiles);
       
       // Agenda as próximas mensagens com intervalo
       if (remainingLeads.length > 0) {
@@ -135,6 +136,7 @@ export class CampaignDispatchService {
           instanceName,
           remainingLeads,
           messageContent,
+          mediaFiles,
           minInterval,
           maxInterval
         );
@@ -162,6 +164,7 @@ export class CampaignDispatchService {
     instanceName: string,
     leads: CampaignLead[],
     messageContent: string,
+    mediaFiles: CampaignMediaFile[],
     minInterval: number,
     maxInterval: number
   ): void {
@@ -206,7 +209,7 @@ export class CampaignDispatchService {
 
     // Agenda o envio
     const timeout = setTimeout(async () => {
-      await this.sendMessage(campaignId, userId, instanceName, currentLead, messageContent);
+      await this.sendMessage(campaignId, userId, instanceName, currentLead, messageContent, mediaFiles);
       
       // Agenda o próximo
       this.scheduleNextMessage(
@@ -215,6 +218,7 @@ export class CampaignDispatchService {
         instanceName,
         remainingLeads,
         messageContent,
+        mediaFiles,
         minInterval,
         maxInterval
       );
@@ -225,14 +229,15 @@ export class CampaignDispatchService {
   }
 
   /**
-   * Envia uma mensagem para um lead
+   * Envia uma mensagem para um lead (texto primeiro, depois mídias uma a uma)
    */
   private static async sendMessage(
     campaignId: string,
     userId: string,
     instanceName: string,
     lead: CampaignLead,
-    messageContent: string
+    messageContent: string,
+    mediaFiles: CampaignMediaFile[] = []
   ): Promise<void> {
     const rawNumber = lead.whatsappNumber || lead.phoneNumber;
     const cleanNumber = rawNumber.replace(/\D/g, '');
@@ -244,15 +249,51 @@ export class CampaignDispatchService {
       console.log(`   📞 Telefone: ${lead.phoneNumber}`);
       console.log(`   🆔 Remote JID: ${lead.remoteJid || 'N/A'}`);
       console.log(`   📍 Endereço: ${lead.address}`);
+      console.log(`   📁 Arquivos: ${mediaFiles.length}`);
       
       console.log(`   🔢 Destinatário: ${destination} ${lead.remoteJid ? '(remoteJid)' : '(número limpo)'}`);
 
-      // Envia a mensagem via Evolution API (usa remoteJid se disponível, conforme documentação)
+      // 1. Envia o TEXTO primeiro via Evolution API
+      console.log(`   📝 Enviando texto...`);
       const response = await evolutionService.sendTextMessage(
         instanceName,
         destination,
         messageContent
       );
+      console.log(`   ✅ Texto enviado! ID: ${response?.key?.id || 'N/A'}`);
+
+      // 2. Envia as MÍDIAS uma a uma (com delay entre cada)
+      if (mediaFiles.length > 0) {
+        console.log(`   📁 Enviando ${mediaFiles.length} arquivo(s)...`);
+        
+        for (let i = 0; i < mediaFiles.length; i++) {
+          const media = mediaFiles[i];
+          const mediaIcon = media.type === 'image' ? '🖼️' : media.type === 'video' ? '🎥' : '📄';
+          console.log(`   ${mediaIcon} Enviando ${media.type} ${i + 1}/${mediaFiles.length}: ${media.fileName}...`);
+          
+          // Delay de 2 segundos entre cada arquivo para não sobrecarregar
+          if (i > 0) {
+            await this.delay(2000);
+          }
+          
+          try {
+            const mediaResponse = await evolutionService.sendMediaMessage(
+              instanceName,
+              destination,
+              media.url,
+              media.type,
+              media.mimeType,
+              media.fileName
+            );
+            console.log(`   ✅ ${media.type} ${i + 1} enviado! ID: ${mediaResponse?.key?.id || 'N/A'}`);
+          } catch (mediaError: any) {
+            console.error(`   ⚠️ Erro ao enviar ${media.type} ${i + 1}: ${mediaError.message}`);
+            // Continua enviando os próximos arquivos mesmo se um falhar
+          }
+        }
+        
+        console.log(`   ✅ Todos os arquivos processados!`);
+      }
 
       // Atualiza status como enviado
       await CampaignService.updateMessageStatus(lead.id, 'sent');

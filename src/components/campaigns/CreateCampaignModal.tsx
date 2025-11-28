@@ -1,11 +1,32 @@
 import { useState } from 'react';
 import { useAuthStore } from '../../store/authStore';
-import { CampaignService } from '../../services/campaignService';
+import { CampaignService, type CampaignMediaFile } from '../../services/campaignService';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import toast from 'react-hot-toast';
-import { X, Search, MapPin, MessageSquare, Clock, Sparkles } from 'lucide-react';
+import { X, Search, MapPin, MessageSquare, Clock, Sparkles, FileUp, Trash2, Image, Video, FileText } from 'lucide-react';
+
+// Tipos de arquivo permitidos
+const ALLOWED_FILE_TYPES = {
+  image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+  video: ['video/mp4', 'video/3gpp', 'video/quicktime'],
+  document: ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/plain'],
+};
+
+const MAX_FILE_SIZE = 16 * 1024 * 1024; // 16MB (limite do WhatsApp)
+
+// Determina o tipo de mídia baseado no MIME type
+const getMediaType = (mimeType: string): 'image' | 'video' | 'document' => {
+  if (ALLOWED_FILE_TYPES.image.includes(mimeType)) return 'image';
+  if (ALLOWED_FILE_TYPES.video.includes(mimeType)) return 'video';
+  return 'document';
+};
+
+// Verifica se o tipo de arquivo é permitido
+const isAllowedFileType = (mimeType: string): boolean => {
+  return [...ALLOWED_FILE_TYPES.image, ...ALLOWED_FILE_TYPES.video, ...ALLOWED_FILE_TYPES.document].includes(mimeType);
+};
 
 interface CreateCampaignModalProps {
   onClose: () => void;
@@ -29,12 +50,102 @@ export default function CreateCampaignModal({ onClose, onSuccess }: CreateCampai
     locationCountry: 'Brasil',
     messageType: 'default' as 'default' | 'custom',
     messageContent: DEFAULT_MESSAGE,
+    mediaFiles: [] as CampaignMediaFile[],
     minIntervalMinutes: 10,
     maxIntervalMinutes: 20,
   });
 
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+
   const handleInputChange = (field: string, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  // Converte arquivo para base64
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = error => reject(error);
+    });
+  };
+
+  // Adiciona arquivo (imagem, vídeo ou documento)
+  const handleAddFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsUploadingFile(true);
+    try {
+      const newFiles: CampaignMediaFile[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        
+        // Valida tipo de arquivo
+        if (!isAllowedFileType(file.type)) {
+          toast.error(`${file.name}: tipo de arquivo não suportado`);
+          continue;
+        }
+        
+        // Valida tamanho (máx 16MB)
+        if (file.size > MAX_FILE_SIZE) {
+          toast.error(`${file.name} é muito grande (máx 16MB)`);
+          continue;
+        }
+        
+        const base64 = await fileToBase64(file);
+        const mediaType = getMediaType(file.type);
+        
+        newFiles.push({
+          url: base64,
+          type: mediaType,
+          mimeType: file.type,
+          fileName: file.name,
+          size: file.size,
+        });
+      }
+      
+      setFormData(prev => ({
+        ...prev,
+        mediaFiles: [...prev.mediaFiles, ...newFiles]
+      }));
+      
+      if (newFiles.length > 0) {
+        toast.success(`${newFiles.length} arquivo(s) adicionado(s)`);
+      }
+    } catch (error) {
+      console.error('Erro ao processar arquivo:', error);
+      toast.error('Erro ao processar arquivo');
+    } finally {
+      setIsUploadingFile(false);
+      e.target.value = '';
+    }
+  };
+
+  // Remove arquivo
+  const handleRemoveFile = (index: number) => {
+    setFormData(prev => ({
+      ...prev,
+      mediaFiles: prev.mediaFiles.filter((_, i) => i !== index)
+    }));
+    toast.success('Arquivo removido');
+  };
+
+  // Ícone do tipo de arquivo
+  const getFileIcon = (type: 'image' | 'video' | 'document') => {
+    switch (type) {
+      case 'image': return <Image className="w-4 h-4" />;
+      case 'video': return <Video className="w-4 h-4" />;
+      case 'document': return <FileText className="w-4 h-4" />;
+    }
+  };
+
+  // Formata tamanho do arquivo
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
   const handleCreateCampaign = async () => {
@@ -73,6 +184,7 @@ export default function CreateCampaignModal({ onClose, onSuccess }: CreateCampai
         locationCountry: formData.locationCountry,
         messageType: formData.messageType,
         messageContent: formData.messageContent,
+        mediaFiles: formData.mediaFiles,
         minIntervalMinutes: formData.minIntervalMinutes,
         maxIntervalMinutes: formData.maxIntervalMinutes,
       });
@@ -316,16 +428,98 @@ export default function CreateCampaignModal({ onClose, onSuccess }: CreateCampai
                 </div>
               </div>
 
+              {/* Upload de Arquivos */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  <FileUp className="w-4 h-4 inline mr-1" />
+                  Arquivos (opcional)
+                </label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Imagens, vídeos e documentos serão enviados após o texto, um por vez. (máx 16MB cada)
+                </p>
+                
+                {/* Lista de arquivos */}
+                <div className="space-y-2 mb-3">
+                  {formData.mediaFiles.map((file, index) => (
+                    <div key={index} className="flex items-center gap-3 p-2 bg-gray-50 rounded-lg border border-gray-200 group">
+                      <div className={`p-2 rounded-lg ${
+                        file.type === 'image' ? 'bg-blue-100 text-blue-600' :
+                        file.type === 'video' ? 'bg-purple-100 text-purple-600' :
+                        'bg-orange-100 text-orange-600'
+                      }`}>
+                        {getFileIcon(file.type)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate">{file.fileName}</p>
+                        <p className="text-xs text-gray-500">
+                          {file.type === 'image' ? 'Imagem' : file.type === 'video' ? 'Vídeo' : 'Documento'} • {formatFileSize(file.size || 0)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveFile(index)}
+                        className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                
+                {/* Botão de adicionar */}
+                <label className={`flex items-center justify-center gap-2 p-4 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-purple-400 hover:bg-purple-50 transition-all ${isUploadingFile ? 'opacity-50 cursor-wait' : ''}`}>
+                  <input
+                    type="file"
+                    accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+                    multiple
+                    onChange={handleAddFile}
+                    disabled={isUploadingFile}
+                    className="hidden"
+                  />
+                  {isUploadingFile ? (
+                    <div className="animate-spin w-5 h-5 border-2 border-purple-500 border-t-transparent rounded-full" />
+                  ) : (
+                    <>
+                      <FileUp className="w-5 h-5 text-gray-400" />
+                      <span className="text-sm text-gray-600">Clique para adicionar arquivos</span>
+                    </>
+                  )}
+                </label>
+                
+                <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
+                  <span className="flex items-center gap-1"><Image className="w-3 h-3" /> JPG, PNG, GIF, WebP</span>
+                  <span className="flex items-center gap-1"><Video className="w-3 h-3" /> MP4, 3GP, MOV</span>
+                  <span className="flex items-center gap-1"><FileText className="w-3 h-3" /> PDF, DOC, XLS, TXT</span>
+                </div>
+              </div>
+
               {/* Preview */}
               <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-4 border border-green-200">
                 <div className="flex items-center gap-2 mb-3">
                   <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
                   <span className="text-sm font-semibold text-gray-700">Preview da Mensagem</span>
                 </div>
-                <div className="bg-white rounded-lg p-4 shadow-sm">
+                <div className="bg-white rounded-lg p-4 shadow-sm space-y-3">
                   <p className="text-sm text-gray-800 whitespace-pre-wrap">
                     {formData.messageContent}
                   </p>
+                  {formData.mediaFiles.length > 0 && (
+                    <div className="pt-2 border-t border-gray-100">
+                      <p className="text-xs text-gray-500 mb-2">+ {formData.mediaFiles.length} arquivo(s) anexado(s)</p>
+                      <div className="flex flex-wrap gap-2">
+                        {formData.mediaFiles.map((file, index) => (
+                          <div key={index} className={`flex items-center gap-1 px-2 py-1 rounded text-xs ${
+                            file.type === 'image' ? 'bg-blue-100 text-blue-700' :
+                            file.type === 'video' ? 'bg-purple-100 text-purple-700' :
+                            'bg-orange-100 text-orange-700'
+                          }`}>
+                            {getFileIcon(file.type)}
+                            <span className="max-w-[100px] truncate">{file.fileName}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

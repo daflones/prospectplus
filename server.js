@@ -4,6 +4,7 @@ import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { campaignWorker } from './backend/services/campaignWorker.js';
 
 dotenv.config();
 
@@ -12,7 +13,8 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Aumenta limite para suportar base64 de arquivos
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Serve static files from the dist directory
 app.use(express.static(path.join(__dirname, 'dist')));
@@ -23,6 +25,9 @@ const PORT = process.env.PORT || 3000;
 if (!GOOGLE_API_KEY) {
   console.warn('⚠️ VITE_GOOGLE_MAPS_API_KEY não configurada no ambiente.');
 }
+
+// Inicia o Campaign Worker automaticamente
+campaignWorker.start();
 
 // --- Google Maps Proxy Routes ---
 
@@ -86,6 +91,58 @@ app.post('/api/places/details', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'Prospect+ Server' });
 });
+
+// --- Campaign Worker API Routes ---
+
+// Status do worker
+app.get('/api/campaign/status', (req, res) => {
+  const status = campaignWorker.getStatus();
+  res.json(status);
+});
+
+// Iniciar campanha (busca + validação + disparo)
+app.post('/api/campaign/launch/:campaignId', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    console.log(`\n🚀 Iniciando campanha via API: ${campaignId}`);
+    
+    const result = await campaignWorker.launchCampaign(campaignId);
+    res.json(result);
+  } catch (error) {
+    console.error('Erro ao iniciar campanha:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Pausar campanha
+app.post('/api/campaign/stop/:campaignId', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    console.log(`\n⏸️ Pausando campanha via API: ${campaignId}`);
+    
+    const result = await campaignWorker.stopCampaign(campaignId);
+    res.json(result);
+  } catch (error) {
+    console.error('Erro ao pausar campanha:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Retomar campanha
+app.post('/api/campaign/resume/:campaignId', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    console.log(`\n▶️ Retomando campanha via API: ${campaignId}`);
+    
+    const result = await campaignWorker.resumeCampaign(campaignId);
+    res.json(result);
+  } catch (error) {
+    console.error('Erro ao retomar campanha:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// --- End Campaign Worker Routes ---
 
 // --- End Proxy Routes ---
 
