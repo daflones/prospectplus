@@ -1,7 +1,9 @@
 import axios from 'axios';
 import { supabase } from './supabaseService';
 
-const PROXY_URL = import.meta.env.PROD ? '' : 'http://localhost:3001'; // Backend proxy
+// Usa URL relativa - o Vite proxy redireciona para o backend em dev
+// Em produção, o mesmo servidor serve frontend e API
+const PROXY_URL = '';
 
 export interface PlaceResult {
   name: string;

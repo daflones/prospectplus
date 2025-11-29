@@ -1,10 +1,9 @@
 import axios from 'axios';
 
-// URL base da API (usa o mesmo servidor)
-const API_BASE_URL = import.meta.env.PROD ? '' : 'http://localhost:3000';
-
+// Usa URL relativa - o Vite proxy redireciona para o backend em dev
+// Em produção, o mesmo servidor serve frontend e API
 const api = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: '',
   timeout: 30000,
 });
 

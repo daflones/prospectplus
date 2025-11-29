@@ -1,7 +1,8 @@
 import axios from 'axios';
 import type { LoginRequest, RegisterRequest, AuthResponse, User } from '../types';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+// Usa URL relativa - o Vite proxy redireciona para o backend em dev
+const API_URL = '/api';
 
 const api = axios.create({
   baseURL: API_URL,
