@@ -49,8 +49,12 @@ Prospect+ é uma solução completa para captura de leads e automação de comun
 # Instalar dependências
 npm install
 
-# Executar em modo de desenvolvimento
+# Executar backend e frontend juntos (RECOMENDADO)
 npm run dev
+
+# Ou executar separadamente:
+npm run backend  # Servidor backend (porta 3001)
+npm run frontend # Interface React (porta 5173)
 
 # Build para produção
 npm run build
@@ -59,7 +63,11 @@ npm run build
 npm run preview
 ```
 
-O aplicativo estará disponível em `http://localhost:5173`
+**Portas utilizadas:**
+- Frontend (React): `http://localhost:5173`
+- Backend (API): `http://localhost:3001`
+
+**⚠️ IMPORTANTE**: Use sempre `npm run dev` para garantir que backend e frontend iniciem juntos!
 
 ## ⚙️ Configuração
 

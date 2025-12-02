@@ -1,9 +1,17 @@
 import { useState, useEffect } from 'react';
-import { X, Clock, CheckCircle, XCircle, Send, Users, MessageSquare } from 'lucide-react';
+import { X, Clock, CheckCircle, XCircle, Send, Users, MessageSquare, AlertCircle, Info } from 'lucide-react';
 import { CampaignService, type Campaign, type CampaignLead, type CampaignMessageLog } from '../../services/campaignService';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import { Card } from '../ui/Card';
+
+// Tipo para logs em tempo real do backend
+interface RealtimeLog {
+  timestamp: string;
+  type: 'info' | 'success' | 'error' | 'warning';
+  message: string;
+  data?: any;
+}
 
 interface CampaignDetailsModalProps {
   campaign: Campaign;
@@ -14,19 +22,23 @@ export default function CampaignDetailsModal({ campaign, onClose }: CampaignDeta
   const [currentCampaign, setCurrentCampaign] = useState<Campaign>(campaign);
   const [leads, setLeads] = useState<CampaignLead[]>([]);
   const [logs, setLogs] = useState<CampaignMessageLog[]>([]);
+  const [realtimeLogs, setRealtimeLogs] = useState<RealtimeLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'leads' | 'logs'>('overview');
   const [timeRemaining, setTimeRemaining] = useState<string>('');
+  const [progress, setProgress] = useState<any>({});
 
   useEffect(() => {
     loadData();
+    loadRealtimeProgress();
     
-    // Atualiza a cada 5 segundos se a campanha estiver ativa
+    // Atualiza a cada 2 segundos se a campanha estiver ativa
     const interval = setInterval(() => {
-      if (currentCampaign.status === 'active') {
+      if (['active', 'searching', 'validating'].includes(currentCampaign.status)) {
         loadData();
+        loadRealtimeProgress();
       }
-    }, 5000);
+    }, 2000);
 
     return () => clearInterval(interval);
   }, [currentCampaign.id, currentCampaign.status]);
@@ -76,15 +88,32 @@ export default function CampaignDetailsModal({ campaign, onClose }: CampaignDeta
     }
   };
 
+  // Busca logs em tempo real do backend
+  const loadRealtimeProgress = async () => {
+    try {
+      const response = await fetch(`/api/campaign/progress/${campaign.id}`);
+      if (response.ok) {
+        const data = await response.json();
+        setRealtimeLogs(data.logs || []);
+        setProgress(data.progress || {});
+      }
+    } catch (error) {
+      // Ignora erros silenciosamente
+    }
+  };
+
   const getStatusBadge = (status: Campaign['status']) => {
-    const badges = {
+    const badges: Record<string, React.ReactNode> = {
       draft: <Badge variant="default">Rascunho</Badge>,
+      scheduled: <Badge variant="info">Programada</Badge>,
+      searching: <Badge variant="info">Buscando...</Badge>,
+      validating: <Badge variant="warning">Validando...</Badge>,
       active: <Badge variant="success">Ativa</Badge>,
       paused: <Badge variant="warning">Pausada</Badge>,
       completed: <Badge variant="info">Concluída</Badge>,
       cancelled: <Badge variant="danger">Cancelada</Badge>,
     };
-    return badges[status];
+    return badges[status] || <Badge variant="default">{status}</Badge>;
   };
 
   const getMessageStatusBadge = (status: string) => {
@@ -97,12 +126,15 @@ export default function CampaignDetailsModal({ campaign, onClose }: CampaignDeta
     return badges[status as keyof typeof badges] || <Badge variant="default">{status}</Badge>;
   };
 
+  // Usa dados do progresso em tempo real quando disponíveis, senão calcula dos leads
   const stats = {
-    totalLeads: leads.length,
-    validWhatsApp: leads.filter(l => l.whatsappValid).length,
-    messagesSent: leads.filter(l => l.messageStatus === 'sent').length,
-    messagesFailed: leads.filter(l => l.messageStatus === 'failed').length,
-    messagesPending: leads.filter(l => l.whatsappValid && l.messageStatus === 'pending').length,
+    totalLeads: progress.leadsFound || leads.length,
+    validWhatsApp: progress.leadsValid || leads.filter(l => l.whatsappValid).length,
+    messagesSent: progress.messagesSent || leads.filter(l => l.messageStatus === 'sent').length,
+    messagesFailed: progress.messagesFailed || leads.filter(l => l.messageStatus === 'failed').length,
+    messagesPending: (progress.leadsValid || leads.filter(l => l.whatsappValid).length) - 
+                     (progress.messagesSent || leads.filter(l => l.messageStatus === 'sent').length) -
+                     (progress.messagesFailed || leads.filter(l => l.messageStatus === 'failed').length),
   };
 
   const conversionRate = stats.totalLeads > 0 
@@ -155,7 +187,7 @@ export default function CampaignDetailsModal({ campaign, onClose }: CampaignDeta
                 : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
             }`}
           >
-            Leads ({stats.totalLeads})
+            Leads ({stats.validWhatsApp})
           </button>
           <button
             onClick={() => setActiveTab('logs')}
@@ -165,7 +197,7 @@ export default function CampaignDetailsModal({ campaign, onClose }: CampaignDeta
                 : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
             }`}
           >
-            Logs ({logs.length})
+            Logs ({realtimeLogs.length + logs.length})
           </button>
         </div>
 
@@ -426,34 +458,40 @@ export default function CampaignDetailsModal({ campaign, onClose }: CampaignDeta
               {/* Leads Tab */}
               {activeTab === 'leads' && (
                 <div className="space-y-4">
-                  {leads.length === 0 ? (
-                    <div className="text-center py-12">
-                      <Users className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                      <p className="text-gray-600 dark:text-gray-400">Nenhum lead encontrado</p>
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full">
-                        <thead className="bg-gray-50 dark:bg-gray-900">
-                          <tr>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
-                              Estabelecimento
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
-                              Telefone
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
-                              WhatsApp
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
-                              Status
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                          {leads.map((lead) => {
-                            const log = logs.find(l => l.leadId === lead.id);
-                            return (
+                  {/* Filtra apenas leads com WhatsApp válido */}
+                  {(() => {
+                    const validLeads = leads.filter(l => l.whatsappValid === true);
+                    
+                    if (validLeads.length === 0) {
+                      return (
+                        <div className="text-center py-12">
+                          <Users className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                          <p className="text-gray-600 dark:text-gray-400">Nenhum lead com WhatsApp válido</p>
+                          <p className="text-sm text-gray-500 dark:text-gray-500 mt-1">
+                            Leads sem WhatsApp são automaticamente removidos
+                          </p>
+                        </div>
+                      );
+                    }
+                    
+                    return (
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead className="bg-gray-50 dark:bg-gray-900">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
+                                Estabelecimento
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
+                                Telefone
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
+                                Status
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                            {validLeads.map((lead) => (
                               <tr key={lead.id} className="hover:bg-gray-50 dark:hover:bg-gray-900/50">
                                 <td className="px-4 py-3">
                                   <div>
@@ -469,39 +507,75 @@ export default function CampaignDetailsModal({ campaign, onClose }: CampaignDeta
                                   {lead.phoneNumber}
                                 </td>
                                 <td className="px-4 py-3">
-                                  {lead.whatsappValid ? (
-                                    <Badge variant="success">Válido</Badge>
+                                  {lead.messageStatus === 'sent' ? (
+                                    <Badge variant="success">Enviada</Badge>
+                                  ) : lead.messageStatus === 'failed' ? (
+                                    <Badge variant="danger">Falhou</Badge>
                                   ) : (
-                                    <Badge variant="danger">Inválido</Badge>
-                                  )}
-                                </td>
-                                <td className="px-4 py-3">
-                                  {log ? (
-                                    getMessageStatusBadge(log.status)
-                                  ) : (
-                                    <Badge variant="default">Não enviado</Badge>
+                                    <Badge variant="default">Pendente</Badge>
                                   )}
                                 </td>
                               </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
               {/* Logs Tab */}
               {activeTab === 'logs' && (
                 <div className="space-y-4">
-                  {logs.length === 0 ? (
+                  {/* Logs em tempo real do backend */}
+                  {realtimeLogs.length > 0 && (
+                    <div className="mb-6">
+                      <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                        Logs em Tempo Real
+                      </h4>
+                      <div className="space-y-2 max-h-[300px] overflow-y-auto bg-gray-50 dark:bg-gray-900 rounded-lg p-3">
+                        {realtimeLogs.slice().reverse().map((log, index) => (
+                          <div 
+                            key={index} 
+                            className={`flex items-start gap-2 text-sm p-2 rounded ${
+                              log.type === 'success' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400' :
+                              log.type === 'error' ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400' :
+                              log.type === 'warning' ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400' :
+                              'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
+                            }`}
+                          >
+                            {log.type === 'success' ? <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> :
+                             log.type === 'error' ? <XCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> :
+                             log.type === 'warning' ? <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> :
+                             <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />}
+                            <div className="flex-1">
+                              <span>{log.message}</span>
+                              <span className="text-xs opacity-60 ml-2">
+                                {new Date(log.timestamp).toLocaleTimeString('pt-BR')}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Logs do banco de dados */}
+                  {logs.length === 0 && realtimeLogs.length === 0 ? (
                     <div className="text-center py-12">
                       <MessageSquare className="w-12 h-12 text-gray-400 mx-auto mb-3" />
                       <p className="text-gray-600 dark:text-gray-400">Nenhum log encontrado</p>
+                      <p className="text-sm text-gray-500 dark:text-gray-500 mt-1">
+                        Os logs aparecerão aqui quando a campanha estiver em execução
+                      </p>
                     </div>
-                  ) : (
+                  ) : logs.length > 0 && (
                     <div className="space-y-3">
+                      <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+                        Histórico de Mensagens
+                      </h4>
                       {logs.map((log) => {
                         const lead = leads.find(l => l.id === log.leadId);
                         return (

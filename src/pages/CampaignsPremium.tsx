@@ -34,6 +34,7 @@ import {
 import CreateCampaignModal from '../components/campaigns/CreateCampaignModal';
 import CampaignLauncher from '../components/campaigns/CampaignLauncher';
 import CampaignDetailsModal from '../components/campaigns/CampaignDetailsModal';
+import CampaignProgress from '../components/campaigns/CampaignProgress';
 
 // Componente de Paginação Premium
 function Pagination({
@@ -457,15 +458,54 @@ export default function CampaignsPremium() {
     }
   }, [user]);
 
+  // Auto-refresh quando há campanhas em execução ou recentemente criadas
+  useEffect(() => {
+    const hasActive = campaigns.some(c => 
+      ['active', 'searching', 'validating'].includes(c.status)
+    );
+    
+    // Também verifica se há campanhas draft recentes (podem ter sido iniciadas)
+    const hasRecentDraft = campaigns.some(c => {
+      if (c.status !== 'draft') return false;
+      const createdAt = new Date(c.createdAt).getTime();
+      const now = Date.now();
+      return (now - createdAt) < 60000; // Criada há menos de 1 minuto
+    });
+    
+    if (hasActive || hasRecentDraft) {
+      const interval = setInterval(() => {
+        loadCampaigns(false); // Não mostrar loading no auto-refresh
+      }, 2000); // Atualiza a cada 2 segundos
+      
+      return () => clearInterval(interval);
+    }
+  }, [campaigns]);
+
   useEffect(() => {
     filterCampaigns();
   }, [campaigns, searchTerm, statusFilter]);
 
-  const loadCampaigns = async () => {
+  const loadCampaigns = async (showLoading = true) => {
     if (!user) return;
     try {
-      setIsLoading(true);
+      if (showLoading && campaigns.length === 0) {
+        setIsLoading(true);
+      }
       const data = await CampaignService.getUserCampaigns(user.id);
+      
+      // Log para debug - mostra status das campanhas
+      const activeCampaigns = data.filter(c => ['active', 'searching', 'validating'].includes(c.status));
+      if (activeCampaigns.length > 0) {
+        console.log('📊 Campanhas ativas encontradas:', activeCampaigns.map(c => ({
+          id: c.id.substring(0, 8),
+          name: c.name,
+          status: c.status,
+          totalLeads: c.totalLeads,
+          sentMessages: c.sentMessages,
+          failedMessages: c.failedMessages
+        })));
+      }
+      
       setCampaigns(data);
     } catch (error) {
       console.error('Erro ao carregar campanhas:', error);
@@ -538,32 +578,54 @@ export default function CampaignsPremium() {
     if (!campaignToSchedule) return;
     
     try {
-      // Salvar configuração de agendamento
-      await CampaignService.updateCampaign(campaignToSchedule.id, {
-        scheduleConfig: {
-          ...campaignToSchedule.scheduleConfig,
-          scheduledDispatch: config,
-        },
+      // Chamar API do backend para programar campanha
+      const response = await fetch(`/api/campaign/schedule/${campaignToSchedule.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: true,
+          startDate: config.startDate,
+          endDate: config.endDate,
+          daysOfWeek: config.daysOfWeek,
+          startHour: config.startHour,
+          endHour: config.endHour,
+          messagesPerDay: config.messagesPerDay || 50,
+        }),
       });
       
-      toast.success('Disparo programado com sucesso!');
-      setShowScheduleModal(false);
-      setCampaignToSchedule(null);
-      loadCampaigns();
+      const result = await response.json();
+      
+      if (result.success) {
+        toast.success(`📅 ${result.message}`);
+        setShowScheduleModal(false);
+        setCampaignToSchedule(null);
+        loadCampaigns();
+      } else {
+        toast.error(result.message || 'Erro ao programar disparo');
+      }
     } catch (error) {
+      console.error('Erro ao programar:', error);
       toast.error('Erro ao programar disparo');
     }
   };
 
-  const getStatusConfig = (status: Campaign['status']) => {
-    const configs = {
+  // Verifica se há alguma campanha em execução
+  const hasRunningCampaign = campaigns.some(c => 
+    ['active', 'searching', 'validating'].includes(c.status)
+  );
+
+  const getStatusConfig = (status: Campaign['status'] | 'scheduled' | 'searching' | 'validating') => {
+    const configs: Record<string, { label: string; color: string; icon: any }> = {
       draft: { label: 'Rascunho', color: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300', icon: Clock },
+      scheduled: { label: 'Programada', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400', icon: CalendarDays },
+      searching: { label: 'Buscando...', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400', icon: Search },
+      validating: { label: 'Validando...', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400', icon: Smartphone },
       active: { label: 'Ativa', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400', icon: Play },
       paused: { label: 'Pausada', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400', icon: Pause },
       completed: { label: 'Concluída', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400', icon: CheckCircle },
       cancelled: { label: 'Cancelada', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400', icon: XCircle },
     };
-    return configs[status];
+    return configs[status] || configs.draft;
   };
 
   // Paginação
@@ -778,8 +840,10 @@ export default function CampaignsPremium() {
               <AnimatePresence mode="popLayout">
                 {paginatedCampaigns.map((campaign, index) => {
                   const statusConfig = getStatusConfig(campaign.status);
+                  // Progresso = (enviadas + falhas) / total de leads válidos
+                  const processed = campaign.sentMessages + campaign.failedMessages;
                   const progress = campaign.totalLeads > 0
-                    ? (campaign.sentMessages / campaign.totalLeads) * 100
+                    ? (processed / campaign.totalLeads) * 100
                     : 0;
 
                   return (
@@ -798,11 +862,15 @@ export default function CampaignsPremium() {
                           <div className="flex items-center gap-3">
                             <div className={`p-2 rounded-xl ${
                               campaign.status === 'active' ? 'bg-emerald-100 dark:bg-emerald-900/30' :
+                              campaign.status === 'searching' ? 'bg-blue-100 dark:bg-blue-900/30' :
+                              campaign.status === 'validating' ? 'bg-amber-100 dark:bg-amber-900/30' :
                               campaign.status === 'paused' ? 'bg-amber-100 dark:bg-amber-900/30' :
                               'bg-gray-100 dark:bg-gray-700'
                             }`}>
                               <statusConfig.icon className={`w-5 h-5 ${
                                 campaign.status === 'active' ? 'text-emerald-600' :
+                                campaign.status === 'searching' ? 'text-blue-600 animate-pulse' :
+                                campaign.status === 'validating' ? 'text-amber-600 animate-pulse' :
                                 campaign.status === 'paused' ? 'text-amber-600' :
                                 'text-gray-600'
                               }`} />
@@ -856,7 +924,7 @@ export default function CampaignsPremium() {
                           <div className="flex justify-between text-sm mb-2">
                             <span className="text-gray-600 dark:text-gray-400">Progresso</span>
                             <span className="font-semibold text-gray-900 dark:text-white">
-                              {campaign.sentMessages} / {campaign.totalLeads}
+                              {campaign.sentMessages + campaign.failedMessages} / {campaign.totalLeads}
                             </span>
                           </div>
                           <div className="progress-premium">
@@ -877,7 +945,7 @@ export default function CampaignsPremium() {
                           </div>
                           <div className="text-center p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl">
                             <p className="text-xl font-bold text-amber-600">
-                              {campaign.totalLeads - campaign.sentMessages - campaign.failedMessages}
+                              {Math.max(0, campaign.totalLeads - campaign.sentMessages - campaign.failedMessages)}
                             </p>
                             <p className="text-xs text-gray-600 dark:text-gray-400">Pendentes</p>
                           </div>
@@ -891,18 +959,34 @@ export default function CampaignsPremium() {
                         <div className="flex flex-wrap gap-2">
                           {campaign.status === 'draft' && (
                             <>
-                              <CampaignLauncher
-                                campaignId={campaign.id}
-                                onComplete={loadCampaigns}
-                              />
+                              {hasRunningCampaign ? (
+                                <div className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-400 rounded-xl font-medium cursor-not-allowed">
+                                  <Play className="w-4 h-4" />
+                                  Aguarde...
+                                </div>
+                              ) : (
+                                <CampaignLauncher
+                                  campaignId={campaign.id}
+                                  onComplete={loadCampaigns}
+                                />
+                              )}
                               <motion.button
-                                whileHover={{ scale: 1.02 }}
-                                whileTap={{ scale: 0.98 }}
+                                whileHover={!hasRunningCampaign ? { scale: 1.02 } : {}}
+                                whileTap={!hasRunningCampaign ? { scale: 0.98 } : {}}
+                                disabled={hasRunningCampaign}
                                 onClick={() => {
+                                  if (hasRunningCampaign) {
+                                    toast.error('Aguarde a campanha atual terminar');
+                                    return;
+                                  }
                                   setCampaignToSchedule(campaign);
                                   setShowScheduleModal(true);
                                 }}
-                                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded-xl font-medium hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors"
+                                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-medium transition-colors ${
+                                  hasRunningCampaign 
+                                    ? 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
+                                    : 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50'
+                                }`}
                               >
                                 <CalendarDays className="w-4 h-4" />
                                 Programar
@@ -929,6 +1013,30 @@ export default function CampaignsPremium() {
                               <Pause className="w-4 h-4" />
                               Pausar
                             </motion.button>
+                          )}
+
+                          {/* Campanha Programada */}
+                          {campaign.status === 'scheduled' && (
+                            <motion.button
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                              onClick={() => {
+                                setCampaignToSchedule(campaign);
+                                setShowScheduleModal(true);
+                              }}
+                              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded-xl font-medium hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors"
+                            >
+                              <CalendarDays className="w-4 h-4" />
+                              Reprogramar
+                            </motion.button>
+                          )}
+
+                          {/* Buscando ou Validando - mostrar loading */}
+                          {(campaign.status === 'searching' || campaign.status === 'validating') && (
+                            <div className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-xl font-medium">
+                              <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                              {campaign.status === 'searching' ? 'Buscando leads...' : 'Validando WhatsApp...'}
+                            </div>
                           )}
 
                           {campaign.status === 'paused' && (
@@ -971,7 +1079,7 @@ export default function CampaignsPremium() {
                             <Copy className="w-4 h-4" />
                           </motion.button>
 
-                          {campaign.status !== 'active' && (
+                          {campaign.status !== 'active' && campaign.status !== 'searching' && campaign.status !== 'validating' && (
                             <motion.button
                               whileHover={{ scale: 1.02 }}
                               whileTap={{ scale: 0.98 }}
@@ -982,6 +1090,12 @@ export default function CampaignsPremium() {
                             </motion.button>
                           )}
                         </div>
+
+                        {/* Progresso em tempo real para campanhas ativas */}
+                        <CampaignProgress 
+                          campaignId={campaign.id}
+                          isActive={['active', 'searching', 'validating'].includes(campaign.status)}
+                        />
                       </div>
                     </motion.div>
                   );

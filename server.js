@@ -252,6 +252,33 @@ app.post('/api/campaign/resume/:campaignId', async (req, res) => {
   }
 });
 
+// Programar campanha
+app.post('/api/campaign/schedule/:campaignId', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const scheduleConfig = req.body;
+    console.log(`\n📅 Programando campanha via API: ${campaignId}`);
+    console.log(`   Config:`, scheduleConfig);
+    
+    const result = await campaignWorker.scheduleCampaign(campaignId, scheduleConfig);
+    res.json(result);
+  } catch (error) {
+    console.error('Erro ao programar campanha:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Buscar logs/progresso da campanha
+app.get('/api/campaign/progress/:campaignId', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const progress = campaignWorker.getCampaignProgress(campaignId);
+    res.json(progress);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // --- End Campaign Worker Routes ---
 
 // --- End Proxy Routes ---

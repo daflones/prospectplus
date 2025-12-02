@@ -19,18 +19,26 @@ export default function CampaignLauncher({ campaignId, onComplete }: CampaignLau
     if (!user || isLaunching) return;
 
     setIsLaunching(true);
+    console.log('🚀 Iniciando campanha:', campaignId);
 
     try {
       // Tenta usar o backend primeiro (recomendado - continua mesmo com aba fechada)
       // O backend verifica automaticamente se o WhatsApp está conectado
       try {
+        console.log('📡 Chamando API: /api/campaign/launch/' + campaignId);
         const result = await CampaignApiService.launchCampaign(campaignId);
+        console.log('📡 Resposta da API:', result);
         
         if (result.success) {
-          toast.success('🚀 ' + result.message + '\n\nVocê pode fechar esta aba - a campanha continuará rodando no servidor!', {
-            duration: 6000,
+          toast.success('🚀 ' + result.message, {
+            duration: 4000,
           });
+          // Recarrega imediatamente e depois a cada segundo por 5 segundos
           onComplete();
+          setTimeout(() => onComplete(), 1000);
+          setTimeout(() => onComplete(), 2000);
+          setTimeout(() => onComplete(), 3000);
+          setTimeout(() => onComplete(), 5000);
         } else {
           toast.error(result.message);
         }

@@ -2,8 +2,14 @@ import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
 
 // Configuração do Supabase (lazy initialization)
+// IMPORTANTE: O backend precisa da SERVICE_ROLE_KEY para bypassar RLS
 const getSupabaseUrl = () => process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-const getSupabaseKey = () => process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+const getSupabaseKey = () => {
+  // Prioriza service_role_key para o backend (bypassa RLS)
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || 
+         process.env.VITE_SUPABASE_ANON_KEY || 
+         process.env.SUPABASE_ANON_KEY;
+};
 
 let supabase = null;
 const getSupabase = () => {
@@ -11,7 +17,12 @@ const getSupabase = () => {
     const url = getSupabaseUrl();
     const key = getSupabaseKey();
     if (url && key) {
-      supabase = createClient(url, key);
+      supabase = createClient(url, key, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      });
     }
   }
   return supabase;
@@ -35,7 +46,91 @@ const getGoogleApiKey = () => process.env.VITE_GOOGLE_MAPS_API_KEY || process.en
 class CampaignWorker {
   constructor() {
     this.activeCampaigns = new Map(); // campaignId -> { status, timeoutId }
+    this.campaignLogs = new Map(); // campaignId -> { logs: [], progress: {} }
     this.isRunning = false;
+  }
+
+  /**
+   * Adiciona log de progresso para uma campanha
+   */
+  addLog(campaignId, type, message, data = {}) {
+    if (!this.campaignLogs.has(campaignId)) {
+      this.campaignLogs.set(campaignId, { 
+        logs: [], 
+        progress: {
+          stage: 'idle',
+          stageLabel: 'Aguardando',
+          percent: 0,
+          leadsFound: 0,
+          leadsValidated: 0,
+          leadsValid: 0,
+          messagesSent: 0,
+          messagesFailed: 0,
+          currentAction: '',
+        }
+      });
+    }
+    
+    const campaignData = this.campaignLogs.get(campaignId);
+    
+    // Evita logs duplicados (mesmo tipo e mensagem nos últimos 2 segundos)
+    const recentLogs = campaignData.logs.slice(-5);
+    const isDuplicate = recentLogs.some(log => {
+      const timeDiff = Date.now() - new Date(log.timestamp).getTime();
+      return log.message === message && log.type === type && timeDiff < 2000;
+    });
+    
+    if (isDuplicate) {
+      return; // Ignora log duplicado
+    }
+    
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      type, // 'info', 'success', 'error', 'warning'
+      message,
+      data,
+    };
+    
+    campaignData.logs.push(logEntry);
+    
+    // Mantém apenas os últimos 100 logs
+    if (campaignData.logs.length > 100) {
+      campaignData.logs = campaignData.logs.slice(-100);
+    }
+    
+    // Log no console também
+    const emoji = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : '📋';
+    console.log(`   ${emoji} ${message}`);
+  }
+
+  /**
+   * Atualiza progresso de uma campanha
+   */
+  updateProgress(campaignId, progress) {
+    if (!this.campaignLogs.has(campaignId)) {
+      this.campaignLogs.set(campaignId, { logs: [], progress: {} });
+    }
+    
+    const campaignData = this.campaignLogs.get(campaignId);
+    campaignData.progress = { ...campaignData.progress, ...progress };
+  }
+
+  /**
+   * Retorna progresso e logs de uma campanha
+   */
+  getCampaignProgress(campaignId) {
+    const data = this.campaignLogs.get(campaignId);
+    if (!data) {
+      return {
+        logs: [],
+        progress: {
+          stage: 'idle',
+          stageLabel: 'Aguardando',
+          percent: 0,
+        }
+      };
+    }
+    return data;
   }
 
   /**
@@ -88,18 +183,39 @@ class CampaignWorker {
    */
   async checkCampaigns() {
     try {
-      // Busca campanhas que precisam de processamento
-      const { data: campaigns, error } = await getSupabase()
+      // Busca campanhas ativas ou em processamento
+      const { data: activeCampaigns, error: activeError } = await getSupabase()
         .from('campaigns')
         .select('*')
         .in('status', ['active', 'searching', 'validating']);
 
-      if (error) {
-        console.error('❌ Erro ao buscar campanhas:', error);
-        return;
+      if (activeError) {
+        console.error('❌ Erro ao buscar campanhas ativas:', activeError);
       }
 
-      if (!campaigns || campaigns.length === 0) {
+      // Busca campanhas programadas que devem iniciar
+      const { data: scheduledCampaigns, error: scheduledError } = await getSupabase()
+        .from('campaigns')
+        .select('*')
+        .eq('status', 'scheduled')
+        .lte('next_scheduled_at', new Date().toISOString());
+
+      if (scheduledError) {
+        console.error('❌ Erro ao buscar campanhas programadas:', scheduledError);
+      }
+
+      // Processa campanhas programadas que devem iniciar
+      if (scheduledCampaigns && scheduledCampaigns.length > 0) {
+        for (const campaign of scheduledCampaigns) {
+          if (this.shouldStartScheduledCampaign(campaign)) {
+            console.log(`\n⏰ Iniciando campanha programada: ${campaign.name}`);
+            await this.startScheduledCampaign(campaign);
+          }
+        }
+      }
+
+      const campaigns = activeCampaigns || [];
+      if (campaigns.length === 0) {
         return;
       }
 
@@ -107,10 +223,16 @@ class CampaignWorker {
 
       for (const campaign of campaigns) {
         // Evita processar a mesma campanha múltiplas vezes
-        if (this.activeCampaigns.has(campaign.id) && this.activeCampaigns.get(campaign.id).processing) {
+        const campaignState = this.activeCampaigns.get(campaign.id);
+        if (campaignState?.processing) {
+          console.log(`   ⏭️ ${campaign.name} já está sendo processada`);
           continue;
         }
 
+        // Marca como processando ANTES de iniciar
+        this.activeCampaigns.set(campaign.id, { ...campaignState, processing: true });
+        
+        // Processa sem await para não bloquear outras campanhas
         this.processCampaign(campaign);
       }
     } catch (error) {
@@ -153,10 +275,10 @@ class CampaignWorker {
    */
   calculateRequiredLeads(campaign) {
     const scheduleConfig = campaign.schedule_config || {};
-    const scheduledDispatch = scheduleConfig.scheduledDispatch || {};
+    const scheduledDispatch = campaign.scheduled_dispatch || scheduleConfig.scheduledDispatch || {};
     
-    // Valores padrão
-    const minLeads = 40;
+    // Valores padrão - mínimo de 100 leads
+    const minLeads = 100;
     const messagesPerDay = scheduledDispatch.messagesPerDay || 50;
     
     // Se tem agendamento com data de fim, calcula baseado nos dias
@@ -184,27 +306,33 @@ class CampaignWorker {
 
   /**
    * Verifica se um estabelecimento já existe no banco (por placeId ou telefone)
+   * Verifica em OUTRAS campanhas do usuário (não na atual, pois já foi limpa)
    */
   async checkDuplicateEstablishment(campaign, placeId, phoneNumber) {
     const normalizedPhone = this.normalizePhone(phoneNumber);
     
-    // Verifica por placeId
-    const { data: byPlaceId } = await getSupabase()
-      .from('campaign_leads')
-      .select('id')
-      .eq('google_place_id', placeId)
-      .limit(1);
-    
-    if (byPlaceId && byPlaceId.length > 0) {
-      return { isDuplicate: true, reason: 'placeId' };
+    // Verifica por placeId em OUTRAS campanhas do usuário
+    if (placeId) {
+      const { data: byPlaceId } = await getSupabase()
+        .from('campaign_leads')
+        .select('id')
+        .eq('user_id', campaign.user_id)
+        .neq('campaign_id', campaign.id) // Exclui a campanha atual
+        .eq('google_place_id', placeId)
+        .limit(1);
+      
+      if (byPlaceId && byPlaceId.length > 0) {
+        return { isDuplicate: true, reason: 'placeId' };
+      }
     }
     
-    // Verifica por telefone (em qualquer campanha do usuário)
+    // Verifica por telefone em OUTRAS campanhas do usuário
     if (normalizedPhone) {
       const { data: byPhone } = await getSupabase()
         .from('campaign_leads')
         .select('id')
         .eq('user_id', campaign.user_id)
+        .neq('campaign_id', campaign.id) // Exclui a campanha atual
         .eq('phone_number', normalizedPhone)
         .limit(1);
       
@@ -221,6 +349,16 @@ class CampaignWorker {
    */
   async searchEstablishments(campaign) {
     console.log(`\n🔍 ETAPA 1: Buscando estabelecimentos...`);
+    
+    // Inicializa progresso
+    this.updateProgress(campaign.id, {
+      stage: 'searching',
+      stageLabel: 'Buscando estabelecimentos...',
+      percent: 0,
+      leadsFound: 0,
+      currentAction: 'Iniciando busca',
+    });
+    this.addLog(campaign.id, 'info', 'Iniciando busca de estabelecimentos');
 
     const targetAudience = campaign.target_audience || {};
     const searchQuery = targetAudience.searchQuery || '';
@@ -231,13 +369,29 @@ class CampaignWorker {
 
     if (!searchQuery || !city) {
       console.error('❌ Configuração de busca incompleta');
+      this.addLog(campaign.id, 'error', 'Configuração de busca incompleta');
       await this.updateCampaignStatus(campaign.id, 'draft', 'Configuração de busca incompleta');
       return;
+    }
+
+    // Limpa leads antigos desta campanha para permitir nova busca
+    console.log(`   🧹 Limpando leads antigos desta campanha...`);
+    this.addLog(campaign.id, 'info', 'Limpando leads antigos');
+    const { error: deleteError } = await getSupabase()
+      .from('campaign_leads')
+      .delete()
+      .eq('campaign_id', campaign.id);
+    
+    if (deleteError) {
+      console.log(`   ⚠️ Erro ao limpar leads antigos: ${deleteError.message}`);
+    } else {
+      console.log(`   ✅ Leads antigos removidos`);
     }
 
     try {
       const query = `${searchQuery} em ${city}, ${state}, ${country}`;
       console.log(`   🔎 Query: ${query}`);
+      this.addLog(campaign.id, 'info', `Buscando: ${searchQuery} em ${city}`);
 
       // Calcula quantos leads são necessários
       const requiredLeads = this.calculateRequiredLeads(campaign);
@@ -248,7 +402,7 @@ class CampaignWorker {
       let processedPlaces = 0;
       let pageToken = null;
       let pageCount = 0;
-      const maxPages = 10; // Aumentado para permitir mais paginação
+      const maxPages = 10;
       const processedPlaceIds = new Set();
 
       // Busca múltiplas páginas até atingir a meta ou esgotar resultados
@@ -332,6 +486,7 @@ class CampaignWorker {
           }
 
           // Salva o lead
+          console.log(`      💾 Salvando lead: ${place.name} - ${details.phoneNumber}`);
           const saved = await this.saveCampaignLead(campaign, {
             name: place.name,
             address: place.formatted_address,
@@ -344,18 +499,31 @@ class CampaignWorker {
           if (saved) {
             savedLeads++;
             console.log(`   ✅ ${savedLeads}/${requiredLeads} - ${place.name}: ${details.phoneNumber}`);
-
+            
+            // Atualiza progresso
+            const percent = Math.min(Math.round((savedLeads / requiredLeads) * 50), 50); // Busca = 0-50%
+            this.updateProgress(campaign.id, {
+              leadsFound: savedLeads,
+              percent,
+              currentAction: `${savedLeads}/${requiredLeads} leads encontrados`,
+            });
+            this.addLog(campaign.id, 'success', `${place.name}: ${details.phoneNumber}`);
+            
             // Verifica se atingiu a meta
             if (savedLeads >= requiredLeads) {
               console.log(`   🎯 Meta atingida!`);
+              this.addLog(campaign.id, 'success', 'Meta de leads atingida!');
               break;
             }
+          } else {
+            console.log(`   ⚠️ Falha ao salvar: ${place.name}`);
           }
         }
 
         // Se não tem próxima página, para
         if (!pageToken) {
           console.log(`   📄 Não há mais páginas disponíveis`);
+          this.addLog(campaign.id, 'warning', 'Não há mais resultados disponíveis');
           break;
         }
 
@@ -393,9 +561,14 @@ class CampaignWorker {
         })
         .eq('id', campaign.id);
 
-      // Atualiza status para validação
+      // Atualiza status para validação e continua automaticamente
       if (savedLeads > 0) {
         await this.updateCampaignStatus(campaign.id, 'validating');
+        
+        // Continua automaticamente para validação
+        console.log(`\n🔄 Continuando para validação de WhatsApp...`);
+        const updatedCampaign = { ...campaign, status: 'validating' };
+        setTimeout(() => this.validateWhatsAppNumbers(updatedCampaign), 1000);
       } else {
         await this.updateCampaignStatus(campaign.id, 'draft', 'Nenhum estabelecimento novo com telefone encontrado');
       }
@@ -441,45 +614,69 @@ class CampaignWorker {
    * Salva lead da campanha no banco
    */
   async saveCampaignLead(campaign, place) {
-    // Normaliza telefone
-    const phoneNumber = this.normalizePhone(place.phoneNumber);
-    
-    if (!phoneNumber) return null;
+    try {
+      // Normaliza telefone
+      const phoneNumber = this.normalizePhone(place.phoneNumber);
+      
+      if (!phoneNumber) {
+        console.log(`      ⚠️ Telefone inválido para ${place.name}`);
+        return null;
+      }
 
-    // Verifica se já existe
-    const { data: existing } = await getSupabase()
-      .from('campaign_leads')
-      .select('id')
-      .eq('campaign_id', campaign.id)
-      .eq('phone_number', phoneNumber)
-      .single();
+      // Verifica se já existe NESTA campanha por telefone
+      const { data: existingInCampaign } = await getSupabase()
+        .from('campaign_leads')
+        .select('id')
+        .eq('campaign_id', campaign.id)
+        .eq('phone_number', phoneNumber)
+        .maybeSingle();
 
-    if (existing) return existing;
+      if (existingInCampaign) {
+        console.log(`      ⏭️ Telefone duplicado nesta campanha: ${place.name}`);
+        return null; // Retorna null para não contar como salvo
+      }
 
-    // Insere novo lead
-    const { data, error } = await getSupabase()
-      .from('campaign_leads')
-      .insert({
-        campaign_id: campaign.id,
-        user_id: campaign.user_id,
-        business_name: place.name,
-        phone_number: phoneNumber,
-        address: place.address,
-        google_place_id: place.placeId,
-        latitude: place.lat,
-        longitude: place.lng,
-        whatsapp_valid: null, // Será validado depois
-        message_status: 'pending',
-      })
-      .select()
-      .single();
+      // Verifica se já existe NESTA campanha por nome (evita duplicatas de nome)
+      const { data: existingByName } = await getSupabase()
+        .from('campaign_leads')
+        .select('id')
+        .eq('campaign_id', campaign.id)
+        .eq('business_name', place.name)
+        .maybeSingle();
 
-    if (error) {
-      console.error('Erro ao salvar lead:', error);
+      if (existingByName) {
+        console.log(`      ⏭️ Estabelecimento duplicado: ${place.name}`);
+        return null;
+      }
+
+      // Insere novo lead
+      const { data, error } = await getSupabase()
+        .from('campaign_leads')
+        .insert({
+          campaign_id: campaign.id,
+          user_id: campaign.user_id,
+          business_name: place.name,
+          phone_number: phoneNumber,
+          address: place.address,
+          google_place_id: place.placeId,
+          latitude: place.lat,
+          longitude: place.lng,
+          whatsapp_valid: null, // Será validado depois
+          message_status: 'pending',
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error(`      ❌ Erro ao salvar lead ${place.name}:`, error.message);
+        return null;
+      }
+
+      return data;
+    } catch (err) {
+      console.error(`      ❌ Exceção ao salvar lead ${place.name}:`, err.message);
       return null;
     }
-
-    return data;
   }
 
   // ==================== VALIDAÇÃO DE WHATSAPP ====================
@@ -489,6 +686,15 @@ class CampaignWorker {
    */
   async validateWhatsAppNumbers(campaign) {
     console.log(`\n📱 ETAPA 2: Validando números de WhatsApp...`);
+    
+    // Atualiza progresso
+    this.updateProgress(campaign.id, {
+      stage: 'validating',
+      stageLabel: 'Validando WhatsApp...',
+      percent: 50,
+      currentAction: 'Conectando à Evolution API',
+    });
+    this.addLog(campaign.id, 'info', 'Iniciando validação de WhatsApp');
 
     // Busca instância do usuário
     const { data: instance, error: instanceError } = await getSupabase()
@@ -500,6 +706,7 @@ class CampaignWorker {
 
     if (instanceError || !instance) {
       console.error('❌ Instância WhatsApp não conectada');
+      this.addLog(campaign.id, 'error', 'WhatsApp não conectado');
       await this.updateCampaignStatus(campaign.id, 'paused', 'WhatsApp não conectado');
       return;
     }
@@ -533,15 +740,30 @@ class CampaignWorker {
     }
 
     console.log(`   📋 ${leads.length} leads para validar`);
+    console.log(`   🔗 Usando instância: ${instance.instance_name}`);
+    this.addLog(campaign.id, 'info', `${leads.length} leads para validar`);
 
     let validCount = 0;
     let invalidCount = 0;
+    let processedCount = 0;
 
     for (const lead of leads) {
+      processedCount++;
+      
+      // Atualiza progresso (validação = 50-80%)
+      const percent = 50 + Math.round((processedCount / leads.length) * 30);
+      this.updateProgress(campaign.id, {
+        percent,
+        leadsValidated: processedCount,
+        leadsValid: validCount,
+        currentAction: `Validando ${processedCount}/${leads.length}`,
+      });
+      
       try {
         const cleanNumber = lead.phone_number.replace(/\D/g, '');
+        console.log(`   🔍 [${processedCount}/${leads.length}] Validando: ${lead.business_name} (${cleanNumber})`);
         
-        // Verifica se tem WhatsApp
+        // Verifica se tem WhatsApp usando Evolution API
         const response = await axios.post(
           `${getEvolutionUrl()}/chat/whatsappNumbers/${instance.instance_name}`,
           { numbers: [cleanNumber] },
@@ -570,12 +792,15 @@ class CampaignWorker {
         if (hasWhatsApp) {
           validCount++;
           console.log(`   ✅ ${lead.business_name}: WhatsApp válido`);
+          this.addLog(campaign.id, 'success', `${lead.business_name}: WhatsApp válido`);
+          this.updateProgress(campaign.id, { leadsValid: validCount });
 
           // Salva também na tabela leads (CRM)
           await this.saveToLeadsTable(campaign.user_id, lead, remoteJid);
         } else {
           invalidCount++;
           console.log(`   ❌ ${lead.business_name}: Sem WhatsApp`);
+          this.addLog(campaign.id, 'warning', `${lead.business_name}: Sem WhatsApp`);
         }
 
         // Delay entre validações
@@ -583,6 +808,7 @@ class CampaignWorker {
 
       } catch (error) {
         console.error(`   ⚠️ Erro ao validar ${lead.business_name}:`, error.message);
+        this.addLog(campaign.id, 'error', `Erro ao validar ${lead.business_name}`);
         
         // Marca como inválido em caso de erro
         await getSupabase()
@@ -594,13 +820,23 @@ class CampaignWorker {
       }
     }
 
-    console.log(`   ✅ Validação concluída: ${validCount} válidos, ${invalidCount} inválidos`);
+    console.log(`\n   ═══════════════════════════════════════`);
+    console.log(`   📊 RESUMO DA VALIDAÇÃO:`);
+    console.log(`   ═══════════════════════════════════════`);
+    console.log(`   ✅ WhatsApp válido: ${validCount}`);
+    console.log(`   ❌ Sem WhatsApp: ${invalidCount}`);
+    console.log(`   ═══════════════════════════════════════\n`);
 
     // Atualiza estatísticas e status
     await this.updateCampaignStats(campaign.id);
 
     if (validCount > 0) {
       await this.updateCampaignStatus(campaign.id, 'active');
+      
+      // Continua automaticamente para disparo
+      console.log(`\n🚀 Iniciando disparos de mensagens...`);
+      const updatedCampaign = { ...campaign, status: 'active' };
+      setTimeout(() => this.processDispatch(updatedCampaign), 2000);
     } else {
       await this.updateCampaignStatus(campaign.id, 'completed', 'Nenhum número válido');
     }
@@ -709,11 +945,12 @@ class CampaignWorker {
 
     if (!instance) {
       console.error('❌ Instância não conectada');
+      this.addLog(campaign.id, 'error', 'WhatsApp desconectado');
       await this.updateCampaignStatus(campaign.id, 'paused', 'WhatsApp desconectado');
       return;
     }
 
-    // Busca próximo lead pendente
+    // Busca próximo lead pendente (não enviado e não falhou)
     const { data: leads } = await getSupabase()
       .from('campaign_leads')
       .select('*')
@@ -723,26 +960,102 @@ class CampaignWorker {
       .order('created_at', { ascending: true })
       .limit(1);
 
+    // Conta mensagens enviadas e falhas
+    const { count: sentCount } = await getSupabase()
+      .from('campaign_leads')
+      .select('*', { count: 'exact', head: true })
+      .eq('campaign_id', campaign.id)
+      .eq('message_status', 'sent');
+
+    const { count: failedCount } = await getSupabase()
+      .from('campaign_leads')
+      .select('*', { count: 'exact', head: true })
+      .eq('campaign_id', campaign.id)
+      .eq('message_status', 'failed');
+
+    const { count: totalValid } = await getSupabase()
+      .from('campaign_leads')
+      .select('*', { count: 'exact', head: true })
+      .eq('campaign_id', campaign.id)
+      .eq('whatsapp_valid', true);
+
+    // Atualiza progresso com dados reais
+    this.updateProgress(campaign.id, {
+      messagesSent: sentCount || 0,
+      messagesFailed: failedCount || 0,
+      leadsValid: totalValid || 0,
+    });
+
     if (!leads || leads.length === 0) {
       console.log('   ✅ Todos os leads foram processados!');
+      this.addLog(campaign.id, 'success', `Campanha concluída! ${sentCount || 0} enviadas, ${failedCount || 0} falhas.`);
+      this.updateProgress(campaign.id, {
+        stage: 'completed',
+        stageLabel: 'Concluída',
+        percent: 100,
+        messagesSent: sentCount || 0,
+        messagesFailed: failedCount || 0,
+      });
       await this.updateCampaignStatus(campaign.id, 'completed');
       return;
     }
 
     const lead = leads[0];
-    const destination = lead.remote_jid || lead.phone_number.replace(/\D/g, '');
+    // IMPORTANTE: A Evolution API espera apenas o número, sem @s.whatsapp.net
+    // Remove qualquer sufixo do JID e mantém apenas os dígitos
+    let destination = lead.phone_number.replace(/\D/g, '');
+    if (lead.remote_jid) {
+      // Extrai apenas o número do JID (ex: 5521999999999@s.whatsapp.net -> 5521999999999)
+      destination = lead.remote_jid.replace(/@.*$/, '');
+    }
+    const messagesSent = sentCount || 0;
+
+    // Atualiza progresso (disparo = 80-100%)
+    const percent = 80 + Math.round((messagesSent / (totalValid || 1)) * 20);
+    this.updateProgress(campaign.id, {
+      stage: 'dispatching',
+      stageLabel: 'Enviando mensagens...',
+      percent,
+      messagesSent,
+      currentAction: `Enviando para ${lead.business_name}`,
+    });
 
     console.log(`   🏢 ${lead.business_name}`);
-    console.log(`   📞 ${destination}`);
+    console.log(`   📞 Número: ${destination}`);
+
+    // Verifica se tem mensagem para enviar
+    const messageText = campaign.message_template || '';
+    if (!messageText.trim()) {
+      console.log(`   ⚠️ Mensagem vazia, pulando...`);
+      this.addLog(campaign.id, 'warning', `Mensagem vazia para ${lead.business_name}`);
+      // Marca como enviado para não tentar novamente
+      await getSupabase()
+        .from('campaign_leads')
+        .update({ message_status: 'sent', sent_at: new Date().toISOString() })
+        .eq('id', lead.id);
+      await this.scheduleNextDispatchTime(campaign);
+      return;
+    }
 
     try {
-      // 1. Envia texto
+      // 1. Envia texto primeiro usando formato Evolution API v1
+      console.log(`   📝 Enviando mensagem de texto...`);
+      console.log(`   📄 Texto: ${messageText.substring(0, 50)}...`);
+      
+      const payload = {
+        number: destination,
+        text: messageText,
+        options: {
+          delay: 1200,
+          presence: 'composing',
+        },
+      };
+      
+      console.log(`   🔗 URL: ${getEvolutionUrl()}/message/sendText/${instance.instance_name}`);
+      
       const textResponse = await axios.post(
         `${getEvolutionUrl()}/message/sendText/${instance.instance_name}`,
-        {
-          number: destination,
-          text: campaign.message_template,
-        },
+        payload,
         {
           headers: {
             'Content-Type': 'application/json',
@@ -753,29 +1066,57 @@ class CampaignWorker {
 
       console.log(`   ✅ Texto enviado! ID: ${textResponse.data?.key?.id || 'N/A'}`);
 
-      // 2. Envia mídias
+      // 2. Envia mídias DEPOIS do texto usando formato Evolution API v1
       const mediaFiles = campaign.media_files || [];
       if (mediaFiles.length > 0) {
-        console.log(`   📁 Enviando ${mediaFiles.length} arquivo(s)...`);
+        console.log(`   📁 Enviando ${mediaFiles.length} arquivo(s) de mídia...`);
 
         for (let i = 0; i < mediaFiles.length; i++) {
           const media = mediaFiles[i];
           
-          if (i > 0) await this.delay(2000);
+          // Delay entre mídias para não sobrecarregar
+          await this.delay(3000);
 
           try {
-            const payload = {
-              number: destination,
-              mediatype: media.type,
-              media: media.url,
-              delay: 1200,
-            };
-            if (media.mimeType) payload.mimetype = media.mimeType;
-            if (media.fileName) payload.fileName = media.fileName;
+            // Determina o mediaType correto baseado no tipo ou mimeType
+            let mediaType = 'document';
+            const mimeType = media.mimeType || '';
+            
+            if (media.type === 'image' || mimeType.startsWith('image/')) {
+              mediaType = 'image';
+            } else if (media.type === 'video' || mimeType.startsWith('video/')) {
+              mediaType = 'video';
+            } else if (media.type === 'audio' || mimeType.startsWith('audio/')) {
+              mediaType = 'audio';
+            }
 
-            await axios.post(
+            console.log(`   📤 Enviando ${mediaType}: ${media.fileName || 'arquivo'}`);
+
+            const mediaPayload = {
+              number: destination,
+              options: {
+                delay: 1200,
+                presence: 'composing',
+              },
+              mediaMessage: {
+                mediaType: mediaType,
+                media: media.url, // URL pública ou Base64
+              },
+            };
+
+            // Adiciona fileName para documentos
+            if (media.fileName) {
+              mediaPayload.mediaMessage.fileName = media.fileName;
+            }
+
+            // Adiciona caption se houver (opcional)
+            if (media.caption) {
+              mediaPayload.mediaMessage.caption = media.caption;
+            }
+
+            const mediaResponse = await axios.post(
               `${getEvolutionUrl()}/message/sendMedia/${instance.instance_name}`,
-              payload,
+              mediaPayload,
               {
                 headers: {
                   'Content-Type': 'application/json',
@@ -784,9 +1125,12 @@ class CampaignWorker {
               }
             );
 
-            console.log(`   ✅ ${media.type} ${i + 1} enviado!`);
+            console.log(`   ✅ ${mediaType} ${i + 1}/${mediaFiles.length} enviado! ID: ${mediaResponse.data?.key?.id || 'N/A'}`);
+            this.addLog(campaign.id, 'success', `Mídia enviada: ${media.fileName || mediaType}`);
           } catch (mediaError) {
-            console.error(`   ⚠️ Erro ao enviar ${media.type}:`, mediaError.message);
+            const errorMsg = mediaError.response?.data?.message || mediaError.message;
+            console.error(`   ⚠️ Erro ao enviar ${media.type || 'mídia'}:`, errorMsg);
+            this.addLog(campaign.id, 'error', `Erro ao enviar mídia: ${errorMsg}`);
           }
         }
       }
@@ -810,18 +1154,28 @@ class CampaignWorker {
 
       // Registra log
       await this.logMessage(campaign.id, lead, 'sent');
+      this.addLog(campaign.id, 'success', `Mensagem enviada para ${lead.business_name}`);
+      this.updateProgress(campaign.id, { 
+        messagesSent: (messagesSent || 0) + 1,
+        currentAction: `Enviado para ${lead.business_name}`,
+      });
 
       console.log(`   ✅ Mensagem enviada com sucesso!`);
 
     } catch (error) {
-      console.error(`   ❌ Erro ao enviar:`, error.message);
+      // Mostra detalhes do erro
+      const errorDetails = error.response?.data || error.message;
+      console.error(`   ❌ Erro ao enviar:`, JSON.stringify(errorDetails, null, 2));
+      
+      const errorMsg = error.response?.data?.message || error.response?.data?.error || error.message;
+      this.addLog(campaign.id, 'error', `Falha: ${lead.business_name} - ${errorMsg}`);
 
       // Marca como falha
       await getSupabase()
         .from('campaign_leads')
         .update({
           message_status: 'failed',
-          error_message: error.message,
+          error_message: typeof errorDetails === 'object' ? JSON.stringify(errorDetails) : errorMsg,
         })
         .eq('id', lead.id);
 
@@ -833,6 +1187,9 @@ class CampaignWorker {
         .eq('id', campaign.id);
 
       await this.logMessage(campaign.id, lead, 'failed', error.message);
+      this.updateProgress(campaign.id, { 
+        messagesFailed: (campaign.failed_messages || 0) + 1,
+      });
     }
 
     // Agenda próximo disparo
@@ -884,12 +1241,16 @@ class CampaignWorker {
       updateData.error_message = errorMessage;
     }
 
-    await getSupabase()
+    const { error } = await getSupabase()
       .from('campaigns')
       .update(updateData)
       .eq('id', campaignId);
 
-    console.log(`   📊 Status atualizado: ${status}`);
+    if (error) {
+      console.error(`   ❌ Erro ao atualizar status: ${error.message}`);
+    } else {
+      console.log(`   📊 Status atualizado: ${status}`);
+    }
   }
 
   /**
@@ -911,7 +1272,7 @@ class CampaignWorker {
     await getSupabase()
       .from('campaigns')
       .update({
-        total_leads: totalLeads,
+        total_leads: validLeads, // Usa apenas leads válidos como total
         sent_messages: sentMessages,
         failed_messages: failedMessages,
       })
@@ -1042,15 +1403,34 @@ class CampaignWorker {
    */
   async launchCampaign(campaignId) {
     try {
-      const { data: campaign, error } = await getSupabase()
+      console.log(`\n📋 Buscando campanha: ${campaignId}`);
+      
+      const supabaseClient = getSupabase();
+      if (!supabaseClient) {
+        console.error('❌ Supabase não configurado');
+        return { success: false, message: 'Erro de configuração do banco de dados' };
+      }
+
+      const { data: campaign, error } = await supabaseClient
         .from('campaigns')
         .select('*')
         .eq('id', campaignId)
         .single();
 
-      if (error || !campaign) {
+      console.log(`   📊 Resultado da busca:`, { campaign: campaign?.id, error: error?.message });
+
+      if (error) {
+        console.error('❌ Erro ao buscar campanha:', error);
+        return { success: false, message: `Erro ao buscar campanha: ${error.message}` };
+      }
+
+      if (!campaign) {
+        console.error('❌ Campanha não encontrada no banco');
         return { success: false, message: 'Campanha não encontrada' };
       }
+
+      console.log(`   ✅ Campanha encontrada: ${campaign.name} (status: ${campaign.status})`);
+      
 
       if (campaign.status === 'active' || campaign.status === 'searching' || campaign.status === 'validating') {
         return { success: false, message: 'Campanha já está em execução' };
@@ -1126,16 +1506,251 @@ class CampaignWorker {
       return { success: false, message: 'Nenhum lead pendente' };
     }
 
-    await this.updateCampaignStatus(campaignId, 'active');
+    // Calcula próximo disparo respeitando o intervalo configurado
+    const scheduleConfig = campaign.schedule_config || {};
+    const minInterval = scheduleConfig.minIntervalMinutes || scheduleConfig.minInterval || 10;
+    const maxInterval = scheduleConfig.maxIntervalMinutes || scheduleConfig.maxInterval || 20;
+    const intervalMs = (Math.floor(Math.random() * (maxInterval - minInterval + 1)) + minInterval) * 60 * 1000;
+    
+    const nextDispatchAt = new Date(Date.now() + intervalMs);
 
-    // Processa imediatamente
-    setTimeout(() => this.processDispatch({ ...campaign, status: 'active' }), 100);
+    // Atualiza status e agenda próximo disparo
+    await getSupabase()
+      .from('campaigns')
+      .update({
+        status: 'active',
+        next_dispatch_at: nextDispatchAt.toISOString(),
+      })
+      .eq('id', campaignId);
 
+    console.log(`   📊 Status atualizado: active`);
+    console.log(`   ⏰ Próximo disparo agendado para: ${nextDispatchAt.toLocaleTimeString('pt-BR')}`);
+
+    // Agenda o disparo para o horário correto (não imediatamente)
+    this.scheduleDispatch({ ...campaign, status: 'active' }, intervalMs);
+
+    const minutes = Math.round(intervalMs / 60000);
     return { 
       success: true, 
-      message: `Campanha retomada! ${pendingLeads.length} leads pendentes.` 
+      message: `Campanha retomada! Próximo envio em ${minutes} minutos. ${pendingLeads.length} leads pendentes.` 
     };
   }
+
+  // ==================== CAMPANHAS PROGRAMADAS ====================
+
+  /**
+   * Verifica se uma campanha programada deve iniciar agora
+   */
+  shouldStartScheduledCampaign(campaign) {
+    const scheduled = campaign.scheduled_dispatch;
+    if (!scheduled || !scheduled.enabled) return false;
+
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentDay = now.getDay(); // 0=Dom, 1=Seg, ..., 6=Sab
+    const currentDate = now.toISOString().split('T')[0];
+
+    // Verifica se está dentro do período
+    if (scheduled.startDate && currentDate < scheduled.startDate) return false;
+    if (scheduled.endDate && currentDate > scheduled.endDate) return false;
+
+    // Verifica se é um dia permitido
+    const daysOfWeek = scheduled.daysOfWeek || [1, 2, 3, 4, 5];
+    if (!daysOfWeek.includes(currentDay)) return false;
+
+    // Verifica se está no horário permitido
+    const startHour = scheduled.startHour || 9;
+    const endHour = scheduled.endHour || 18;
+    if (currentHour < startHour || currentHour >= endHour) return false;
+
+    // Verifica limite de mensagens por dia
+    const messagesPerDay = scheduled.messagesPerDay || 50;
+    const messagesToday = campaign.messages_today || 0;
+    const messagesTodayDate = campaign.messages_today_date;
+
+    // Se é um novo dia, reseta o contador
+    if (messagesTodayDate !== currentDate) {
+      return true; // Pode iniciar
+    }
+
+    // Verifica se ainda pode enviar mais mensagens hoje
+    return messagesToday < messagesPerDay;
+  }
+
+  /**
+   * Inicia uma campanha programada
+   */
+  async startScheduledCampaign(campaign) {
+    try {
+      // Verifica WhatsApp
+      const instanceCheck = await this.checkWhatsAppInstance(campaign.user_id);
+      if (!instanceCheck.connected) {
+        console.log(`   ⚠️ WhatsApp não conectado para campanha ${campaign.name}`);
+        return;
+      }
+
+      // Reseta contador de mensagens se é um novo dia
+      const today = new Date().toISOString().split('T')[0];
+      if (campaign.messages_today_date !== today) {
+        await getSupabase()
+          .from('campaigns')
+          .update({
+            messages_today: 0,
+            messages_today_date: today,
+          })
+          .eq('id', campaign.id);
+      }
+
+      // Atualiza status para active
+      await this.updateCampaignStatus(campaign.id, 'active');
+
+      // Processa disparo
+      setTimeout(() => this.processDispatch({ ...campaign, status: 'active' }), 100);
+
+      console.log(`   ✅ Campanha programada iniciada: ${campaign.name}`);
+    } catch (error) {
+      console.error(`   ❌ Erro ao iniciar campanha programada:`, error);
+    }
+  }
+
+  /**
+   * Programa uma campanha para disparo futuro
+   */
+  async scheduleCampaign(campaignId, scheduleConfig) {
+    try {
+      const nextScheduledAt = this.calculateNextDispatchTime(scheduleConfig);
+
+      await getSupabase()
+        .from('campaigns')
+        .update({
+          status: 'scheduled',
+          scheduled_dispatch: {
+            enabled: true,
+            ...scheduleConfig,
+          },
+          next_scheduled_at: nextScheduledAt?.toISOString() || null,
+        })
+        .eq('id', campaignId);
+
+      return {
+        success: true,
+        message: nextScheduledAt 
+          ? `Campanha programada para ${nextScheduledAt.toLocaleString('pt-BR')}`
+          : 'Campanha programada',
+        nextScheduledAt,
+      };
+    } catch (error) {
+      console.error('Erro ao programar campanha:', error);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Calcula o próximo horário de disparo
+   */
+  calculateNextDispatchTime(config) {
+    if (!config || !config.enabled) return null;
+
+    const now = new Date();
+    const startDate = config.startDate ? new Date(config.startDate) : now;
+    const endDate = config.endDate ? new Date(config.endDate) : null;
+    const daysOfWeek = config.daysOfWeek || [1, 2, 3, 4, 5];
+    const startHour = config.startHour || 9;
+    const endHour = config.endHour || 18;
+
+    // Começa pela data atual ou data de início
+    let checkDate = new Date(Math.max(now.getTime(), startDate.getTime()));
+
+    // Procura o próximo horário válido (máximo 14 dias)
+    for (let i = 0; i < 14; i++) {
+      const dayOfWeek = checkDate.getDay();
+
+      if (daysOfWeek.includes(dayOfWeek)) {
+        // É um dia válido
+        if (endDate && checkDate > endDate) {
+          return null; // Passou da data final
+        }
+
+        const currentHour = checkDate.getHours();
+
+        if (checkDate.toDateString() === now.toDateString()) {
+          // É hoje
+          if (currentHour < endHour) {
+            // Ainda dá tempo hoje
+            const nextHour = Math.max(startHour, currentHour + 1);
+            checkDate.setHours(nextHour, 0, 0, 0);
+            return checkDate;
+          }
+        } else {
+          // Dia futuro
+          checkDate.setHours(startHour, 0, 0, 0);
+          return checkDate;
+        }
+      }
+
+      // Avança para o próximo dia
+      checkDate.setDate(checkDate.getDate() + 1);
+      checkDate.setHours(0, 0, 0, 0);
+    }
+
+    return null;
+  }
+
+  /**
+   * Atualiza próximo horário de disparo após enviar mensagem
+   */
+  async updateNextScheduledDispatch(campaign) {
+    const scheduled = campaign.scheduled_dispatch;
+    if (!scheduled || !scheduled.enabled) return;
+
+    // Incrementa contador de mensagens do dia
+    const today = new Date().toISOString().split('T')[0];
+    const messagesToday = (campaign.messages_today_date === today ? campaign.messages_today : 0) + 1;
+    const messagesPerDay = scheduled.messagesPerDay || 50;
+
+    // Calcula próximo horário
+    let nextScheduledAt = null;
+    let newStatus = campaign.status;
+
+    if (messagesToday >= messagesPerDay) {
+      // Atingiu limite do dia, programa para amanhã
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(scheduled.startHour || 9, 0, 0, 0);
+      
+      nextScheduledAt = this.calculateNextDispatchTime({
+        ...scheduled,
+        startDate: tomorrow.toISOString().split('T')[0],
+      });
+
+      // Pausa até amanhã
+      newStatus = 'scheduled';
+      console.log(`   📅 Limite diário atingido (${messagesToday}/${messagesPerDay}). Próximo: ${nextScheduledAt?.toLocaleString('pt-BR')}`);
+    } else {
+      // Ainda pode enviar hoje
+      nextScheduledAt = this.calculateNextDispatchTime(scheduled);
+    }
+
+    // Verifica se a campanha terminou
+    if (scheduled.endDate && new Date() > new Date(scheduled.endDate + 'T23:59:59')) {
+      newStatus = 'completed';
+      nextScheduledAt = null;
+      console.log(`   ✅ Campanha programada concluída (período encerrado)`);
+    }
+
+    await getSupabase()
+      .from('campaigns')
+      .update({
+        status: newStatus,
+        messages_today: messagesToday,
+        messages_today_date: today,
+        next_scheduled_at: nextScheduledAt?.toISOString() || null,
+        last_dispatch_at: new Date().toISOString(),
+      })
+      .eq('id', campaign.id);
+  }
+
+  // ==================== FIM CAMPANHAS PROGRAMADAS ====================
 
   /**
    * Retorna status do worker

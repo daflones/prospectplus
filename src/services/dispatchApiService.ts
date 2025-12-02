@@ -71,6 +71,27 @@ export class CampaignApiService {
       throw error;
     }
   }
+
+  /**
+   * Programa uma campanha para disparo futuro
+   */
+  static async scheduleCampaign(campaignId: string, scheduleConfig: {
+    enabled: boolean;
+    startDate: string;
+    endDate: string;
+    daysOfWeek: number[];
+    startHour: number;
+    endHour: number;
+    messagesPerDay?: number;
+  }): Promise<CampaignResult & { nextScheduledAt?: string }> {
+    try {
+      const response = await api.post(`/api/campaign/schedule/${campaignId}`, scheduleConfig);
+      return response.data;
+    } catch (error) {
+      console.error('Erro ao programar campanha:', error);
+      throw error;
+    }
+  }
 }
 
 // Alias para compatibilidade

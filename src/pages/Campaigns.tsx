@@ -33,6 +33,7 @@ import {
   Eye,
   Trash2,
   Copy,
+  Search,
 } from 'lucide-react';
 
 export default function Campaigns() {
@@ -103,25 +104,31 @@ export default function Campaigns() {
   const getStatusBadge = (status: Campaign['status']) => {
     const badges = {
       draft: <Badge variant="default">Rascunho</Badge>,
+      scheduled: <Badge variant="info">Programada</Badge>,
+      searching: <Badge variant="info">Buscando...</Badge>,
+      validating: <Badge variant="warning">Validando...</Badge>,
       active: <Badge variant="success">Ativa</Badge>,
       paused: <Badge variant="warning">Pausada</Badge>,
       completed: <Badge variant="info">Concluída</Badge>,
       cancelled: <Badge variant="danger">Cancelada</Badge>,
     };
 
-    return badges[status];
+    return badges[status] || <Badge variant="default">{status}</Badge>;
   };
 
   const getStatusIcon = (status: Campaign['status']) => {
-    const icons = {
+    const icons: Record<string, React.ReactNode> = {
       draft: <Clock className="w-5 h-5 text-gray-400" />,
+      scheduled: <Clock className="w-5 h-5 text-purple-500" />,
+      searching: <Search className="w-5 h-5 text-blue-500" />,
+      validating: <Smartphone className="w-5 h-5 text-amber-500" />,
       active: <Play className="w-5 h-5 text-green-500" />,
       paused: <Pause className="w-5 h-5 text-yellow-500" />,
       completed: <CheckCircle className="w-5 h-5 text-blue-500" />,
       cancelled: <XCircle className="w-5 h-5 text-red-500" />,
     };
 
-    return icons[status];
+    return icons[status] || <Clock className="w-5 h-5 text-gray-400" />;
   };
 
   const handleDeleteCampaign = async (campaignId: string, campaignName: string) => {

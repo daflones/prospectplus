@@ -354,9 +354,36 @@ export default function ProspectingPremium() {
           const result = await response.json();
           if (result.success) {
             toast.success('Campanha iniciada! Buscando e validando números...');
+          } else {
+            toast.error(result.message || 'Erro ao iniciar campanha');
           }
         } catch {
           toast.error('Campanha criada, mas não foi possível iniciar automaticamente');
+        }
+      } else if (!campaignData.startNow) {
+        // Programar campanha para disparo futuro
+        try {
+          const scheduleResponse = await fetch(`/api/campaign/schedule/${campaign.id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              enabled: true,
+              startDate: campaignData.startDate,
+              endDate: campaignData.endDate,
+              daysOfWeek: campaignData.daysOfWeek,
+              startHour: campaignData.startHour,
+              endHour: campaignData.endHour,
+              messagesPerDay: 50,
+            }),
+          });
+          const scheduleResult = await scheduleResponse.json();
+          if (scheduleResult.success) {
+            toast.success(`📅 ${scheduleResult.message}`);
+          } else {
+            toast.error(scheduleResult.message || 'Erro ao programar campanha');
+          }
+        } catch {
+          toast.error('Campanha criada, mas não foi possível programar');
         }
       }
     } catch (error: any) {

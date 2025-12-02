@@ -14,8 +14,8 @@ export interface Campaign {
   userId: string;
   name: string;
   description?: string;
-  type: 'prospecting' | 'follow_up' | 'nurture';
-  status: 'draft' | 'active' | 'paused' | 'completed' | 'cancelled';
+  type: 'prospecting' | 'follow_up' | 'nurture' | 'whatsapp';
+  status: 'draft' | 'scheduled' | 'searching' | 'validating' | 'active' | 'paused' | 'completed' | 'cancelled';
   targetAudience?: {
     searchQuery?: string;
     location?: {
@@ -141,7 +141,14 @@ export class CampaignService {
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('Erro ao criar campanha no Supabase:', error);
+        throw error;
+      }
+
+      console.log('✅ Campanha criada com sucesso:', data);
+      console.log('   ID:', data.id);
+      console.log('   Nome:', data.name);
 
       return this.mapCampaign(data);
     } catch (error) {
